@@ -1,0 +1,46 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Build & packaging output (PyInstaller / Inno Setup) ---
+# build/FiduciaFacture.spec is checked-in source; everything else PyInstaller
+# writes into build/ (intermediate object files, etc.) is disposable.
+build/*
+!build/FiduciaFacture.spec
+dist/
+
+# --- Local runtime / business data ---
+# The app stores these under the user's Documents and %LOCALAPPDATA% folders,
+# never inside the repo - these patterns are just a safety net in case the
+# app is ever run with this folder as its working directory during dev.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+facture_app.db
+*token*.txt
+*chat_id*.txt
+logs/
+*.log
+
+# --- Secrets ---
+.env
+*.pem
+*.key
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
