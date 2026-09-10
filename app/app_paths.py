@@ -122,3 +122,8 @@ def migrate_legacy_user_files() -> None:
         src, dst = legacy / name, target / name
         if src.exists() and not dst.exists():
             shutil.copy2(src, dst)
+
+
+def get_asset_path(filename: str) -> Path:
+    """Get path to an asset file in the assets directory."""
+    return Path(__file__).resolve().parent.parent / "assets" / filename

@@ -338,6 +338,12 @@ def init_db():
             "INSERT INTO app_meta (key, value) VALUES ('numero_format_v2_migrated', '1')"
         )
 
+    # Migration: add reserved_numero to preserve a number across unfinalize/re-finalize
+    # cycles so that défacturé invoices recover their original number on re-facturation.
+    existing_invoice_columns = [row["name"] for row in cur.execute("PRAGMA table_info(invoices)").fetchall()]
+    if "reserved_numero" not in existing_invoice_columns:
+        cur.execute("ALTER TABLE invoices ADD COLUMN reserved_numero TEXT DEFAULT NULL")
+
     # Adopt the completed legacy-compatible schema as explicit schema version 1.
     # Future versions must add transactional migrations in app/migrations.py.
     migrate(conn)
@@ -569,19 +575,32 @@ def create_invoice(client_id, business_type, tva_rate, deadline="Immédiat", inv
 
 
 def finalize_invoice(invoice_id):
-    """Promotes a draft (numero = NULL) into an official, numbered facture: assigns
-    the next sequential number for its invoice_date's year. Returns the new numero.
-    No-op (returns the existing numero) if the invoice already has one."""
+    """Promotes a draft (numero = NULL) into an official, numbered facture.
+    If the invoice was previously défacturé, its original number is restored from
+    reserved_numero so the sequential numbering is never broken. Otherwise the next
+    counter number for its year is assigned. Returns the numero. No-op if the
+    invoice already has one."""
     conn = get_connection()
     try:
-        row = conn.execute("SELECT numero, invoice_date FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        row = conn.execute(
+            "SELECT numero, reserved_numero, invoice_date FROM invoices WHERE id = ?",
+            (invoice_id,)
+        ).fetchone()
         if row is None:
             return None
         if row["numero"]:
             return row["numero"]
-        year = int(row["invoice_date"].split("-")[0])
-        numero = _next_invoice_number(conn, year)
-        conn.execute("UPDATE invoices SET numero = ? WHERE id = ?", (numero, invoice_id))
+        if row["reserved_numero"]:
+            # Restore the original number; no counter change needed.
+            numero = row["reserved_numero"]
+            conn.execute(
+                "UPDATE invoices SET numero = ?, reserved_numero = NULL WHERE id = ?",
+                (numero, invoice_id)
+            )
+        else:
+            year = int(row["invoice_date"].split("-")[0])
+            numero = _next_invoice_number(conn, year)
+            conn.execute("UPDATE invoices SET numero = ? WHERE id = ?", (numero, invoice_id))
         conn.commit()
         return numero
     except Exception:
@@ -724,6 +743,28 @@ def delete_invoice(invoice_id):
     conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
     conn.commit()
     conn.close()
+
+
+def unfinalize_invoice(invoice_id):
+    """Reverts a finalized invoice back to draft (numero = NULL, status = 'unpaid').
+    The current numero is preserved in reserved_numero so that re-facturation restores
+    the exact same number without consuming a new counter slot.
+    Moves the invoice from Factures tab back to List SF tab."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT numero FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        if row is None:
+            return
+        conn.execute(
+            "UPDATE invoices SET reserved_numero = numero, numero = NULL, status = 'unpaid' WHERE id = ?",
+            (invoice_id,)
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ---------------- Credit / balances ----------------

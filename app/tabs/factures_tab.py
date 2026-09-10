@@ -1,15 +1,17 @@
 from tkinter import filedialog
 from datetime import date
 import customtkinter as ctk
+from PIL import Image
 from app import database as db
 from app.theme import COLORS, body_font, heading_font
 from app.format_utils import format_price_dh, MONTHS_FR
 from app.widgets import (
-    section_title, primary_button, secondary_button, MessageDialog, labeled_entry,
-    SegmentedToggle, status_pill, avatar_badge
+    section_title, primary_button, secondary_button, danger_button, MessageDialog, labeled_entry,
+    SegmentedToggle, status_pill, avatar_badge, ConfirmDialog
 )
 from app import pdf_export
 from app.app_logger import log_exception
+from app.app_paths import get_asset_path
 
 DEADLINE_OPTIONS = ["Immédiat", "30j", "60j", "90j", "120j"]
 
@@ -28,8 +30,6 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         profile = db.get_company_profile() or {}
 
         if not self.clients:
-            # Safety net only - FacturesTab.open_new_dialog() already checks for
-            # this before ever constructing this dialog, so this shouldn't normally run.
             self.destroy()
             return
 
@@ -38,10 +38,6 @@ class InvoiceFormDialog(ctk.CTkToplevel):
 
         section_title(scroll, "Modifier la facture" if invoice else "Nouvelle facture").pack(anchor="w", pady=(0, 12))
 
-        # Client picker. Clients are looked up by their unique id, never by name,
-        # so two clients that happen to share the same name are never confused
-        # with each other. When a name collision exists, the dropdown label is
-        # disambiguated with the client's id.
         name_counts = {}
         for c in self.clients:
             name_counts[c["name"]] = name_counts.get(c["name"], 0) + 1
@@ -63,8 +59,6 @@ class InvoiceFormDialog(ctk.CTkToplevel):
                           button_hover_color=COLORS["baby_blue_dark"], text_color=COLORS["text"],
                           dropdown_fg_color=COLORS["white"]).pack(anchor="w", pady=(4, 14), fill="x")
 
-        # Invoice date - editable only when creating (never changed once issued, to
-        # preserve the legally-required sequential numbering).
         ctk.CTkLabel(scroll, text="Date de la facture", font=body_font(12, "bold"),
                      text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 4))
         if invoice:
@@ -77,7 +71,6 @@ class InvoiceFormDialog(ctk.CTkToplevel):
                          fg_color=COLORS["bg_soft"], border_color=COLORS["border"],
                          text_color=COLORS["text"], corner_radius=12).pack(anchor="w", pady=(0, 14), fill="x")
 
-        # Business type / VAT toggle - defaults to "Avec TVA" for new invoices
         type_frame = ctk.CTkFrame(scroll, fg_color="transparent")
         type_frame.pack(anchor="w", fill="x", pady=(0, 14))
         ctk.CTkLabel(type_frame, text="Type de facturation", font=body_font(12, "bold"),
@@ -95,7 +88,6 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         self.tva_rate_var = ctk.StringVar(value=str(default_tva_rate))
         self.tva_frame, self.tva_entry = labeled_entry(scroll, "Taux de TVA (%)", self.tva_rate_var, width=100)
 
-        # Deadline
         ctk.CTkLabel(scroll, text="Deadline", font=body_font(12, "bold"),
                      text_color=COLORS["text_muted"]).pack(anchor="w", pady=(14, 4))
         self.deadline_var = ctk.StringVar(value=invoice["deadline"] if invoice and invoice.get("deadline") else DEADLINE_OPTIONS[0])
@@ -104,22 +96,18 @@ class InvoiceFormDialog(ctk.CTkToplevel):
                           button_hover_color=COLORS["baby_blue_dark"], text_color=COLORS["text"],
                           dropdown_fg_color=COLORS["white"]).pack(anchor="w", pady=(0, 14), fill="x")
 
-        # Services checklist (from the selected client's service+price rows) - the
-        # checked ones are snapshotted onto this invoice permanently at save time.
         ctk.CTkLabel(scroll, text="Services", font=body_font(12, "bold"),
                      text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 4))
         self.services_frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_soft"], corner_radius=12)
         self.services_frame.pack(fill="x", pady=(0, 14))
-        self.service_checks = []  # list of (row_dict, BooleanVar)
+        self.service_checks = []
 
-        # Notes
         self.notes_var = ctk.StringVar(value=invoice["notes"] if invoice and invoice.get("notes") else "")
         labeled_entry(scroll, "Notes (optionnel)", self.notes_var)[0].pack(fill="x", pady=(0, 14))
 
         self._on_type_change()
         self._on_client_change(self.client_var.get())
 
-        # Buttons
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=16)
         secondary_button(btn_frame, "Annuler", self.destroy, width=140).pack(side="left", padx=8)
@@ -145,11 +133,9 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         if not rows:
             ctk.CTkLabel(self.services_frame, text="Aucun service assigné à ce client.",
                          font=body_font(12), text_color=COLORS["text_muted"]).pack(
-                anchor="w", padx=12, pady=10)
+                 anchor="w", padx=12, pady=10)
             return
 
-        # When editing, pre-check whichever rows this invoice was originally snapshotted
-        # from (matched via source_price_id). New invoices default to everything checked.
         preselected_ids = None
         if self.invoice and client["id"] == self.invoice["client_id"]:
             existing_items = db.get_invoice_items(self.invoice["id"])
@@ -243,7 +229,6 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
                      font=heading_font(20), text_color=COLORS["text"]).pack(anchor="w")
         ctk.CTkLabel(scroll, text=f"Date: {inv['invoice_date']}", font=body_font(12), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(2, 12))
 
-        # Emitter
         emitter_frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_soft"], corner_radius=12)
         emitter_frame.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(emitter_frame, text="Émetteur", font=body_font(12, "bold"), text_color=COLORS["text_muted"]).pack(anchor="w", padx=12, pady=(10, 2))
@@ -251,18 +236,15 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
         ice_line = f"ICE: {profile.get('ice') or '-'}   IF: {profile.get('if_number') or '-'}"
         ctk.CTkLabel(emitter_frame, text=ice_line, font=body_font(11), text_color=COLORS["text_muted"]).pack(anchor="w", padx=12, pady=(0, 10))
 
-        # Client
         client_frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_soft"], corner_radius=12)
         client_frame.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(client_frame, text="Client", font=body_font(12, "bold"), text_color=COLORS["text_muted"]).pack(anchor="w", padx=12, pady=(10, 2))
         ctk.CTkLabel(client_frame, text=inv["client_name"], font=body_font(13, "bold")).pack(anchor="w", padx=12)
         ctk.CTkLabel(client_frame, text=f"ICE: {inv['client_ice'] or '-'}", font=body_font(11), text_color=COLORS["text_muted"]).pack(anchor="w", padx=12, pady=(0, 10))
 
-        # Deadline
         ctk.CTkLabel(scroll, text="Deadline", font=body_font(12, "bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 2))
         ctk.CTkLabel(scroll, text=inv.get("deadline") or "Immédiat", font=body_font(13, "bold"), text_color=COLORS["text"]).pack(anchor="w", pady=(0, 12))
 
-        # Services (read-only, from the client's service+price rows)
         ctk.CTkLabel(scroll, text="Services", font=body_font(12, "bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 4))
         services_frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_soft"], corner_radius=12)
         services_frame.pack(fill="x", pady=(0, 14))
@@ -292,7 +274,6 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
         InvoiceFormDialog(self.master, self.on_change, invoice=self.invoice)
 
     def print_pdf(self):
-        """Generates the invoice PDF and lets the user choose where to save it."""
         default_name = f"{self.invoice['numero']}.pdf"
         save_path = filedialog.asksaveasfilename(
             parent=self,
@@ -320,8 +301,22 @@ class FacturesTab(ctk.CTkFrame):
         self.sort_column = None
         self.sort_descending = True
         self.month_filter = ctk.StringVar(value=MONTHS_FR[today.month - 1])
+        self.selected_invoice_ids = set()
+        self.select_all_var = ctk.BooleanVar(value=False)
+        self.checkbox_vars = {}
+        self.bulk_action_frame = None
+        self.show_checkboxes = False
+
+        off_img = Image.open(get_asset_path("select-mode-off.png"))
+        on_img = Image.open(get_asset_path("select-mode-on.png"))
+        self.select_off_icon = ctk.CTkImage(light_image=off_img, dark_image=off_img, size=(22, 22))
+        self.select_on_icon = ctk.CTkImage(light_image=on_img, dark_image=on_img, size=(22, 22))
+
         self._build_ui()
         self.refresh()
+        self.bind("<Control-a>", self._on_select_all)
+        self.bind("<Escape>", self._on_escape)
+        self.focus_set()
 
     def _build_ui(self):
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -329,7 +324,7 @@ class FacturesTab(ctk.CTkFrame):
         section_title(header, "Factures").pack(side="left")
 
         filter_frame = ctk.CTkFrame(self, fg_color="transparent")
-        filter_frame.pack(fill="x", padx=24, pady=(0, 14))
+        filter_frame.pack(fill="x", padx=24, pady=(0, 4))
         search_entry = ctk.CTkEntry(
             filter_frame, textvariable=self.search_var, placeholder_text="Rechercher (numéro, client)...",
             width=240, fg_color=COLORS["bg_soft"], border_color=COLORS["border"], corner_radius=12
@@ -350,46 +345,100 @@ class FacturesTab(ctk.CTkFrame):
         year_entry.pack(side="left", padx=(0, 10))
         year_entry.bind("<KeyRelease>", lambda e: self.refresh())
 
-        ctk.CTkOptionMenu(
+        month_menu = ctk.CTkOptionMenu(
             filter_frame, values=["Tous mois"] + MONTHS_FR, variable=self.month_filter,
             command=lambda _: self.refresh(), fg_color=COLORS["bg_soft"],
             button_color=COLORS["baby_blue_deep"], button_hover_color=COLORS["baby_blue_dark"],
             text_color=COLORS["text"], dropdown_fg_color=COLORS["white"], width=150, corner_radius=12
-        ).pack(side="left")
+        )
+        month_menu.pack(side="left")
+
+        self.select_mode_btn = ctk.CTkButton(
+            filter_frame, text="", image=self.select_off_icon, command=self._toggle_select_mode,
+            width=36, height=36, fg_color="transparent", hover_color=COLORS["bg_soft"],
+            corner_radius=10
+        )
+        self.select_mode_btn.pack(side="left", padx=(10, 0))
+
+        self.bulk_action_frame = ctk.CTkFrame(filter_frame, fg_color="transparent")
+        self.bulk_action_frame.pack(side="left", padx=(10, 0))
+        self._update_bulk_actions_visibility()
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color=COLORS["white"], corner_radius=16)
-        self.list_frame.pack(fill="both", expand=True, padx=24, pady=(0, 20))
-        for i, w in enumerate([2, 3, 2, 2, 2, 1]):
+        self.list_frame.pack(fill="both", expand=True, padx=24, pady=(4, 20))
+        self._build_headers()
+
+    def _build_headers(self):
+        for w in self.list_frame.winfo_children():
+            if w.grid_info().get("row") == 0:
+                w.destroy()
+
+        if self.show_checkboxes:
+            self.sort_headers = [
+                ("numero", "F°"),
+                ("client_name", "Client"),
+                ("invoice_date", "Date"),
+                ("deadline", "Deadline"),
+                ("status", "Statut"),
+            ]
+            col_weights = [1, 2, 3, 2, 2, 2, 1]
+            header_offset = 1
+        else:
+            self.sort_headers = [
+                ("numero", "F°"),
+                ("client_name", "Client"),
+                ("invoice_date", "Date"),
+                ("deadline", "Deadline"),
+                ("status", "Statut"),
+            ]
+            col_weights = [2, 3, 2, 2, 2, 1]
+            header_offset = 0
+
+        for i, w in enumerate(col_weights):
             self.list_frame.grid_columnconfigure(i, weight=w)
 
-        self.sort_headers = [
-            ("numero", "F°"),
-            ("client_name", "Client"),
-            ("invoice_date", "Date"),
-            ("deadline", "Deadline"),
-            ("status", "Statut"),
-        ]
         self.header_labels = {}
         for i, (key, label) in enumerate(self.sort_headers):
             header = ctk.CTkLabel(
                 self.list_frame, text=label, font=body_font(12, "bold"),
                 text_color=COLORS["text_muted"], anchor="w", cursor="hand2"
             )
-            header.grid(row=0, column=i, sticky="w", padx=8, pady=(0, 10))
+            header.grid(row=0, column=i + header_offset, sticky="w", padx=8, pady=(0, 10))
             header.bind("<Button-1>", lambda e, key=key: self._sort_by(key))
             self.header_labels[key] = header
 
+        if self.show_checkboxes:
+            select_all_cb = ctk.CTkCheckBox(
+                self.list_frame, text="", variable=self.select_all_var,
+                command=self._toggle_select_all, width=28, height=28,
+                fg_color=COLORS["baby_blue_deep"], hover_color=COLORS["baby_blue_dark"],
+                checkbox_width=20, checkbox_height=20, corner_radius=4
+            )
+            select_all_cb.grid(row=0, column=0, sticky="w", padx=8, pady=(0, 10))
+
         ctk.CTkLabel(self.list_frame, text="", font=body_font(12, "bold"),
                      text_color=COLORS["text_muted"], anchor="w").grid(
-            row=0, column=5, sticky="w", padx=8, pady=(0, 10)
+            row=0, column=len(self.sort_headers) + header_offset, sticky="w", padx=8, pady=(0, 10)
         )
+
+    def _toggle_select_mode(self):
+        self.show_checkboxes = not self.show_checkboxes
+        if self.show_checkboxes:
+            self.select_mode_btn.configure(image=self.select_on_icon)
+        else:
+            self.select_mode_btn.configure(image=self.select_off_icon)
+            self.selected_invoice_ids.clear()
+            self.checkbox_vars.clear()
+            self.select_all_var.set(False)
+            self._update_bulk_actions_visibility()
+        self._build_headers()
+        self._rebuild_rows()
 
     def _sort_by(self, column):
         if self.sort_column == column:
             self.sort_descending = not self.sort_descending
         else:
             self.sort_column = column
-            # First click sorts descending, as requested (e.g. F°: largest -> smallest).
             self.sort_descending = True
         self._update_sort_headers()
         self.refresh()
@@ -410,7 +459,6 @@ class FacturesTab(ctk.CTkFrame):
             order = {"Immédiat": 0, "30j": 30, "60j": 60, "90j": 90, "120j": 120}
             return order.get(value, 999)
         if column == "numero":
-            # Invoice numbers may contain a prefix; compare their numeric part when possible.
             digits = "".join(ch for ch in str(value) if ch.isdigit())
             return (int(digits) if digits else -1)
         if column in ("client_name",):
@@ -421,9 +469,122 @@ class FacturesTab(ctk.CTkFrame):
         self.status_filter.set(value)
         self.refresh()
 
-    def refresh(self):
-        for w in self.list_frame.winfo_children()[6:]:
+    def _toggle_select_all(self):
+        if self.select_all_var.get():
+            for inv in self.current_invoices:
+                self.selected_invoice_ids.add(inv["id"])
+                if inv["id"] in self.checkbox_vars:
+                    self.checkbox_vars[inv["id"]].set(True)
+        else:
+            self.selected_invoice_ids.clear()
+            for var in self.checkbox_vars.values():
+                var.set(False)
+        self._update_bulk_actions_visibility()
+        self._update_select_all_state()
+
+    def _on_select_all(self, event):
+        if self.show_checkboxes:
+            self.select_all_var.set(not self.select_all_var.get())
+            self._toggle_select_all()
+
+    def _on_escape(self, event):
+        if self.selected_invoice_ids:
+            self.select_all_var.set(False)
+            self.selected_invoice_ids.clear()
+            for var in self.checkbox_vars.values():
+                var.set(False)
+            self._update_bulk_actions_visibility()
+            self._update_select_all_state()
+
+    def _on_checkbox_change(self, invoice_id, var):
+        if var.get():
+            self.selected_invoice_ids.add(invoice_id)
+        else:
+            self.selected_invoice_ids.discard(invoice_id)
+        self._update_bulk_actions_visibility()
+        self._update_select_all_state()
+
+    def _update_select_all_state(self):
+        if not hasattr(self, 'current_invoices') or not self.current_invoices:
+            self.select_all_var.set(False)
+        elif len(self.selected_invoice_ids) == len(self.current_invoices):
+            self.select_all_var.set(True)
+        else:
+            self.select_all_var.set(False)
+
+    def _update_bulk_actions_visibility(self):
+        for w in self.bulk_action_frame.winfo_children():
             w.destroy()
+
+        if not self.selected_invoice_ids:
+            return
+
+        count = len(self.selected_invoice_ids)
+        ctk.CTkLabel(
+            self.bulk_action_frame, text=f"{count} sélectionnée(s)",
+            font=body_font(12, "bold"), text_color=COLORS["baby_blue_deep"]
+        ).pack(side="left", padx=(0, 10))
+
+        danger_button(
+            self.bulk_action_frame, "Supprimer", self.bulk_delete, width=100
+        ).pack(side="left", padx=(0, 6))
+        primary_button(
+            self.bulk_action_frame, "Défacturer", self.bulk_unfinalize, width=100
+        ).pack(side="left")
+
+    def _rebuild_rows(self):
+        for w in self.list_frame.winfo_children():
+            if w.grid_info().get("row", 0) > 0:
+                w.destroy()
+
+        if not self.current_invoices:
+            empty = ctk.CTkLabel(self.list_frame, text="Aucune facture trouvée.",
+                                  font=body_font(13), text_color=COLORS["text_muted"])
+            col_span = 7 if self.show_checkboxes else 6
+            empty.grid(row=1, column=0, columnspan=col_span, sticky="w", padx=8, pady=20)
+            return
+
+        for idx, inv in enumerate(self.current_invoices):
+            row = idx + 1
+            col_offset = 0
+
+            if self.show_checkboxes:
+                var = ctk.BooleanVar(value=False)
+                self.checkbox_vars[inv["id"]] = var
+                cb = ctk.CTkCheckBox(
+                    self.list_frame, text="", variable=var,
+                    command=lambda inv_id=inv["id"], v=var: self._on_checkbox_change(inv_id, v),
+                    width=28, height=28, fg_color=COLORS["baby_blue_deep"],
+                    hover_color=COLORS["baby_blue_dark"], checkbox_width=20,
+                    checkbox_height=20, corner_radius=4
+                )
+                cb.grid(row=row, column=0, sticky="w", padx=8, pady=6)
+                col_offset = 1
+
+            ctk.CTkLabel(self.list_frame, text=inv["numero"], font=body_font(13, "bold"),
+                         text_color=COLORS["text"], anchor="w").grid(row=row, column=col_offset, sticky="w", padx=8, pady=6)
+
+            client_cell = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+            client_cell.grid(row=row, column=col_offset + 1, sticky="w", padx=8, pady=6)
+            avatar_badge(client_cell, inv["client_name"], size=28, font_size=11).pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(client_cell, text=inv["client_name"], font=body_font(12),
+                         text_color=COLORS["text"]).pack(side="left")
+
+            ctk.CTkLabel(self.list_frame, text=inv["invoice_date"], font=body_font(12),
+                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=col_offset + 2, sticky="w", padx=8, pady=6)
+            ctk.CTkLabel(self.list_frame, text=inv.get("deadline") or "Immédiat", font=body_font(12),
+                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=col_offset + 3, sticky="w", padx=8, pady=6)
+
+            is_paid = inv["status"] == "paid"
+            status_pill(self.list_frame, "Payée" if is_paid else "Non payée",
+                        "success" if is_paid else "danger").grid(row=row, column=col_offset + 4, sticky="w", padx=8, pady=6)
+
+            secondary_button(self.list_frame, "Voir", lambda inv=inv: self.open_detail(inv), width=70).grid(row=row, column=col_offset + 5, sticky="e", padx=8, pady=4)
+
+    def refresh(self):
+        self.selected_invoice_ids.clear()
+        self.checkbox_vars.clear()
+        self.select_all_var.set(False)
 
         status_map = {"Toutes": None, "Payées": "paid", "Non payées": "unpaid"}
         year_value = self.year_filter.get().strip()
@@ -441,35 +602,47 @@ class FacturesTab(ctk.CTkFrame):
                 reverse=self.sort_descending,
             )
 
-        self._update_sort_headers()
-
-        if not invoices:
-            empty = ctk.CTkLabel(self.list_frame, text="Aucune facture trouvée.",
-                                  font=body_font(13), text_color=COLORS["text_muted"])
-            empty.grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=20)
-            return
-
-        for idx, inv in enumerate(invoices):
-            row = idx + 1
-            ctk.CTkLabel(self.list_frame, text=inv["numero"], font=body_font(13, "bold"),
-                         text_color=COLORS["text"], anchor="w").grid(row=row, column=0, sticky="w", padx=8, pady=6)
-
-            client_cell = ctk.CTkFrame(self.list_frame, fg_color="transparent")
-            client_cell.grid(row=row, column=1, sticky="w", padx=8, pady=6)
-            avatar_badge(client_cell, inv["client_name"], size=28, font_size=11).pack(side="left", padx=(0, 8))
-            ctk.CTkLabel(client_cell, text=inv["client_name"], font=body_font(12),
-                         text_color=COLORS["text"]).pack(side="left")
-
-            ctk.CTkLabel(self.list_frame, text=inv["invoice_date"], font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=2, sticky="w", padx=8, pady=6)
-            ctk.CTkLabel(self.list_frame, text=inv.get("deadline") or "Immédiat", font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=3, sticky="w", padx=8, pady=6)
-
-            is_paid = inv["status"] == "paid"
-            status_pill(self.list_frame, "Payée" if is_paid else "Non payée",
-                        "success" if is_paid else "danger").grid(row=row, column=4, sticky="w", padx=8, pady=6)
-
-            secondary_button(self.list_frame, "Voir", lambda inv=inv: self.open_detail(inv), width=70).grid(row=row, column=5, sticky="e", padx=8, pady=4)
+        self.current_invoices = invoices
+        self._build_headers()
+        self._rebuild_rows()
+        self._update_bulk_actions_visibility()
 
     def open_detail(self, invoice):
         InvoiceDetailDialog(self, invoice["id"], self.refresh)
+
+    def bulk_delete(self):
+        if not self.selected_invoice_ids:
+            return
+        count = len(self.selected_invoice_ids)
+        ConfirmDialog(
+            self, f"Supprimer {count} facture(s) sélectionnée(s) ?\n\nCette action est irréversible.",
+            self._do_bulk_delete
+        )
+
+    def _do_bulk_delete(self):
+        for inv_id in list(self.selected_invoice_ids):
+            try:
+                db.delete_invoice(inv_id)
+            except Exception as e:
+                log_exception("Suppression groupée", e)
+                MessageDialog(self, "Erreur", f"Impossible de supprimer une facture : {e}", is_error=True)
+        self.refresh()
+
+    def bulk_unfinalize(self):
+        if not self.selected_invoice_ids:
+            return
+        count = len(self.selected_invoice_ids)
+        ConfirmDialog(
+            self, f"Défacturer {count} facture(s) sélectionnée(s) ?\n\n"
+                  "Elles redeviendront des brouillons (sans numéro) et seront déplacées vers l'onglet List SF.",
+            self._do_bulk_unfinalize
+        )
+
+    def _do_bulk_unfinalize(self):
+        for inv_id in list(self.selected_invoice_ids):
+            try:
+                db.unfinalize_invoice(inv_id)
+            except Exception as e:
+                log_exception("Défacturation groupée", e)
+                MessageDialog(self, "Erreur", f"Impossible de défacturer une facture : {e}", is_error=True)
+        self.refresh()
