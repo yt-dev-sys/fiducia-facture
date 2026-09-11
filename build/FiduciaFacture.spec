@@ -6,7 +6,10 @@ project = Path(SPECPATH).parent
 app_dir = project / "app"
 
 # Keep application assets inside the frozen application bundle.
+# app/assets  → app/assets  (logo.jpeg used by pdf_export)
+# assets/     → assets/     (icons: select-mode-off.png, select-mode-on.png, .ico)
 datas = [(str(app_dir / "assets"), "app/assets")]
+datas += [(str(project / "assets"), "assets")]
 datas += collect_data_files("customtkinter")
 
 hiddenimports = [

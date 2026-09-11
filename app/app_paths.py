@@ -125,5 +125,17 @@ def migrate_legacy_user_files() -> None:
 
 
 def get_asset_path(filename: str) -> Path:
-    """Get path to an asset file in the assets directory."""
-    return Path(__file__).resolve().parent.parent / "assets" / filename
+    """Get path to an asset file in the assets directory.
+
+    Works both when running from source and when frozen by PyInstaller.
+    PyInstaller sets sys._MEIPASS to the _internal bundle directory; assets
+    are placed there under 'assets/' by the spec file.
+    """
+    import sys
+    if getattr(sys, "frozen", False):
+        # Running inside a PyInstaller bundle
+        base = Path(sys._MEIPASS)
+    else:
+        # Running from source: assets/ sits at the project root
+        base = Path(__file__).resolve().parent.parent
+    return base / "assets" / filename
