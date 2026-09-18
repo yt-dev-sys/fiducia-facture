@@ -531,8 +531,11 @@ def delete_service(service_id):
 
 # ---------------- Invoices ----------------
 
-def _next_invoice_number(conn, year: int):
-    """Generate the next sequential invoice number for the given year, no gaps."""
+def _next_sequence_order(conn, year: int):
+    """Returns the next never-reused "sequence_order" slot for the given year. This is
+    the invoice's permanent home position (it decides relative order - who was finalized
+    before whom) and is completely separate from its displayed numero, which is
+    recomputed gapless by _resequence_year() below."""
     row = conn.execute("SELECT next_number FROM invoice_counters WHERE year = ?", (year,)).fetchone()
     if row is None:
         conn.execute("INSERT INTO invoice_counters (year, next_number) VALUES (?, 2)", (year,))
@@ -540,7 +543,33 @@ def _next_invoice_number(conn, year: int):
     else:
         seq = row["next_number"]
         conn.execute("UPDATE invoice_counters SET next_number = next_number + 1 WHERE year = ?", (year,))
-    return f"{seq:03d}-{year}"
+    return seq
+
+
+def _resequence_year(conn, year: int):
+    """Recomputes numero for every currently-finalized invoice of the given year, in
+    order of sequence_order, so the displayed numbers are always a gapless
+    001-YEAR, 002-YEAR, ... with no holes left by défacturation or deletion.
+    Invoices that aren't finalized (numero IS NULL) are untouched and have no
+    sequence_order of their own - they get a brand new one, at the end, whenever
+    they're finalized (see finalize_invoice)."""
+    rows = conn.execute(
+        "SELECT id FROM invoices WHERE numero IS NOT NULL AND strftime('%Y', invoice_date) = ? "
+        "ORDER BY sequence_order ASC",
+        (f"{year:04d}",)
+    ).fetchall()
+    # Two passes: numero has a UNIQUE constraint that's checked immediately (not
+    # deferred), so renumbering in place can momentarily collide with another row's
+    # current value (e.g. two invoices swapping 001/002). Clearing them all first
+    # avoids that - this all happens inside one uncommitted transaction so no other
+    # connection ever observes the intermediate NULLs.
+    for row in rows:
+        conn.execute("UPDATE invoices SET numero = NULL WHERE id = ?", (row["id"],))
+    for rank, row in enumerate(rows, start=1):
+        conn.execute(
+            "UPDATE invoices SET numero = ? WHERE id = ?",
+            (f"{rank:03d}-{year}", row["id"])
+        )
 
 
 def create_invoice(client_id, business_type, tva_rate, deadline="Immédiat", invoice_date=None, notes="", selected_items=None):
@@ -565,6 +594,7 @@ def create_invoice(client_id, business_type, tva_rate, deadline="Immédiat", inv
         """, (invoice_date, client_id, business_type, tva_rate, deadline, notes))
         invoice_id = cur.lastrowid
         _set_invoice_items(conn, invoice_id, selected_items)
+        _recompute_and_store_totals(conn, invoice_id)
         conn.commit()
         return invoice_id
     except Exception:
@@ -576,32 +606,32 @@ def create_invoice(client_id, business_type, tva_rate, deadline="Immédiat", inv
 
 def finalize_invoice(invoice_id):
     """Promotes a draft (numero = NULL) into an official, numbered facture.
-    If the invoice was previously défacturé, its original number is restored from
-    reserved_numero so the sequential numbering is never broken. Otherwise the next
-    counter number for its year is assigned. Returns the numero. No-op if the
+    A fresh sequence_order slot is assigned every time an invoice is finalized -
+    including a re-facturation after a défacturation - so it's always placed at
+    the end of the current sequence rather than reserving/restoring an old spot.
+    The displayed numero is then recomputed for the whole year via
+    _resequence_year() so it's always gapless. Returns the numero. No-op if the
     invoice already has one."""
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT numero, reserved_numero, invoice_date FROM invoices WHERE id = ?",
+            "SELECT numero, invoice_date FROM invoices WHERE id = ?",
             (invoice_id,)
         ).fetchone()
         if row is None:
             return None
         if row["numero"]:
             return row["numero"]
-        if row["reserved_numero"]:
-            # Restore the original number; no counter change needed.
-            numero = row["reserved_numero"]
-            conn.execute(
-                "UPDATE invoices SET numero = ?, reserved_numero = NULL WHERE id = ?",
-                (numero, invoice_id)
-            )
-        else:
-            year = int(row["invoice_date"].split("-")[0])
-            numero = _next_invoice_number(conn, year)
-            conn.execute("UPDATE invoices SET numero = ? WHERE id = ?", (numero, invoice_id))
+        year = int(row["invoice_date"].split("-")[0])
+        seq = _next_sequence_order(conn, year)
+        conn.execute("UPDATE invoices SET sequence_order = ? WHERE id = ?", (seq, invoice_id))
+        # Temporary placeholder just to mark this row "finalized" (numero NOT NULL) so
+        # _resequence_year picks it up; it's immediately overwritten with the real,
+        # gapless number below.
+        conn.execute("UPDATE invoices SET numero = ? WHERE id = ?", (f"TMP-{invoice_id}", invoice_id))
+        _resequence_year(conn, year)
         conn.commit()
+        numero = conn.execute("SELECT numero FROM invoices WHERE id = ?", (invoice_id,)).fetchone()["numero"]
         return numero
     except Exception:
         conn.rollback()
@@ -645,6 +675,43 @@ def get_invoice_display_items(invoice):
     return get_client_service_prices(invoice["client_id"])
 
 
+def _recompute_and_store_totals(conn, invoice_id):
+    """Recomputes subtotal_ht/tva_amount/total_ttc from this invoice's line items
+    (or, for legacy invoices with no snapshot, the client's current prices) and
+    writes them onto the invoice row. Called once whenever an invoice's items or
+    tva_rate/business_type change, so compute_invoice_totals() can just read the
+    stored columns afterwards instead of re-querying items on every call."""
+    inv = conn.execute(
+        "SELECT id, client_id, business_type, tva_rate FROM invoices WHERE id = ?", (invoice_id,)
+    ).fetchone()
+    if inv is None:
+        return
+    items = conn.execute(
+        "SELECT line_total AS price FROM invoice_items WHERE invoice_id = ?", (invoice_id,)
+    ).fetchall()
+    if items:
+        total_ttc = sum(r["price"] for r in items)
+    else:
+        rows = conn.execute(
+            "SELECT price FROM client_service_prices WHERE client_id = ?", (inv["client_id"],)
+        ).fetchall()
+        total_ttc = sum(r["price"] for r in rows)
+
+    business_type = inv["business_type"]
+    tva_rate = inv["tva_rate"] if business_type == "company" else 0.0
+    if business_type == "company" and tva_rate:
+        subtotal_ht = total_ttc / (1 + tva_rate / 100.0)
+        tva_amount = total_ttc - subtotal_ht
+    else:
+        subtotal_ht = total_ttc
+        tva_amount = 0.0
+
+    conn.execute(
+        "UPDATE invoices SET subtotal_ht = ?, tva_amount = ?, total_ttc = ? WHERE id = ?",
+        (subtotal_ht, tva_amount, total_ttc, invoice_id)
+    )
+
+
 def update_invoice(invoice_id, client_id, business_type, tva_rate, deadline, notes="", selected_items=None):
     """Updates an existing invoice's editable fields. The invoice number and creation
     date are never changed, to preserve the legally-required sequential numbering.
@@ -658,6 +725,7 @@ def update_invoice(invoice_id, client_id, business_type, tva_rate, deadline, not
     """, (client_id, business_type, tva_rate, deadline, notes, invoice_id))
     if selected_items is not None:
         _set_invoice_items(conn, invoice_id, selected_items)
+    _recompute_and_store_totals(conn, invoice_id)
     conn.commit()
     conn.close()
 
@@ -738,27 +806,42 @@ def set_invoice_paid(invoice_id, payment_type, payment_date):
 
 
 def delete_invoice(invoice_id):
+    """Deletes an invoice. If it was a finalized facture, the remaining factures of
+    that year are resequenced afterwards so no permanent gap is left behind."""
     conn = get_connection()
-    conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", (invoice_id,))
-    conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
-    conn.commit()
-    conn.close()
+    try:
+        row = conn.execute("SELECT numero, invoice_date FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", (invoice_id,))
+        conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+        if row is not None and row["numero"] is not None:
+            year = int(row["invoice_date"].split("-")[0])
+            _resequence_year(conn, year)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def unfinalize_invoice(invoice_id):
     """Reverts a finalized invoice back to draft (numero = NULL, status = 'unpaid').
-    The current numero is preserved in reserved_numero so that re-facturation restores
-    the exact same number without consuming a new counter slot.
+    Its sequence_order slot is cleared too - a défactured invoice has no reserved
+    spot at all while it sits in List SF, and gets a brand new slot at the end of
+    the sequence whenever it's finalized again. The other invoices of that year
+    are then resequenced to close the gap it leaves behind.
     Moves the invoice from Factures tab back to List SF tab."""
     conn = get_connection()
     try:
-        row = conn.execute("SELECT numero FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
-        if row is None:
+        row = conn.execute("SELECT numero, invoice_date FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        if row is None or row["numero"] is None:
             return
+        year = int(row["invoice_date"].split("-")[0])
         conn.execute(
-            "UPDATE invoices SET reserved_numero = numero, numero = NULL, status = 'unpaid' WHERE id = ?",
+            "UPDATE invoices SET numero = NULL, sequence_order = NULL, status = 'unpaid' WHERE id = ?",
             (invoice_id,)
         )
+        _resequence_year(conn, year)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -833,18 +916,10 @@ def count_invoices_by_status(status):
 
 
 def compute_invoice_totals(invoice):
-    """Given an invoice row (dict-like, must have client_id/business_type/tva_rate),
-    returns (total_ttc, subtotal_ht, tva_amount). Prices are always TTC; HT/TVA are
-    derived from them, matching the PDF/report calculations."""
-    items = get_invoice_display_items(invoice)
-    business_type = invoice["business_type"]
-    tva_rate = invoice["tva_rate"] if business_type == "company" else 0.0
-
-    total_ttc = sum(row["price"] for row in items)
-    if business_type == "company" and tva_rate:
-        subtotal_ht = total_ttc / (1 + tva_rate / 100.0)
-        tva_amount = total_ttc - subtotal_ht
-    else:
-        subtotal_ht = total_ttc
-        tva_amount = 0.0
-    return total_ttc, subtotal_ht, tva_amount
+    """Given an invoice row (dict-like), returns (total_ttc, subtotal_ht, tva_amount).
+    These are stored on the invoice row itself (kept up to date by
+    _recompute_and_store_totals whenever items/tva_rate/business_type change), so this
+    is now a plain read with no extra DB query - it used to re-fetch and re-sum this
+    invoice's line items on every single call, which was the main source of the
+    N+1-query slowdown in List SF, Factures, and the Editions/reports totals."""
+    return invoice["total_ttc"], invoice["subtotal_ht"], invoice["tva_amount"]

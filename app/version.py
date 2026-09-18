@@ -1,7 +1,7 @@
 """Single source of truth for the application version and update channel."""
 
 APP_NAME = "Fiducia Facture"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.5"
 UPDATE_CHANNEL = "stable"
 
 # Fill these in before publishing the first release. Releases should contain
