@@ -26,7 +26,7 @@ class ListSFTab(ctk.CTkFrame):
         self.search_var = ctk.StringVar()
         self.status_filter = ctk.StringVar(value="Toutes")
         self.year_filter = ctk.StringVar(value=str(today.year))
-        self.month_filter = ctk.StringVar(value=MONTHS_FR[today.month - 1])
+        self.month_filter = ctk.StringVar(value="Tous mois")
         self.current_invoices = []
         self.selected_invoice_ids = set()
         self.select_all_var = ctk.BooleanVar(value=False)

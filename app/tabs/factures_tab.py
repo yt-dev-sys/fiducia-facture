@@ -248,11 +248,12 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
         ctk.CTkLabel(scroll, text="Services", font=body_font(12, "bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 4))
         services_frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_soft"], corner_radius=12)
         services_frame.pack(fill="x", pady=(0, 14))
-        service_rows = db.get_client_service_prices(inv["client_id"])
-        if service_rows:
-            text = "\n".join(f"{r['description']} — {format_price_dh(r['price'])}" for r in service_rows)
+        # Show only the services that were checked/selected for this invoice
+        invoice_items = db.get_invoice_items(invoice_id)
+        if invoice_items:
+            text = "\n".join(f"{r['description']} — {format_price_dh(r['price'])}" for r in invoice_items)
         else:
-            text = "Aucun service assigné à ce client."
+            text = "Aucun service sélectionné pour cette facture."
         ctk.CTkLabel(services_frame, text=text, font=body_font(12), text_color=COLORS["text"],
                      justify="left", anchor="w").pack(fill="x", padx=12, pady=10)
 

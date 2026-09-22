@@ -50,6 +50,7 @@ class FactureApp(ctk.CTk):
         self._build_sidebar(root)
         self._build_content(root)
         self.select_tab("Dashboard")
+        self._setup_text_selection()
         self.after(1200, self._check_updates_automatically)
         self.after(1500, self._start_daily_telegram_backup)
 
@@ -120,7 +121,69 @@ class FactureApp(ctk.CTk):
         for frame in self.tab_frames.values():
             frame.grid(row=0, column=0, sticky="nsew")
 
+    def _setup_text_selection(self):
+        """Enable text copying via right-click context menu on any widget."""
+        import tkinter as tk
+
+        self._copy_menu = tk.Menu(self, tearoff=0)
+        self._copy_menu.add_command(label="Copier", command=self._copy_widget_text)
+        self._last_clicked_widget = None
+
+        def on_right_click(event):
+            widget = event.widget
+            self._last_clicked_widget = widget
+            try:
+                self._copy_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._copy_menu.grab_release()
+
+        def on_left_click(event):
+            self._last_clicked_widget = event.widget
+
+        self.bind_all("<Button-3>", on_right_click)
+        self.bind_all("<Button-1>", on_left_click)
+
+    def _copy_widget_text(self):
+        """Copy text from the last right-clicked widget to clipboard."""
+        widget = self._last_clicked_widget
+        if widget is None:
+            return
+        text = None
+        try:
+            # CTkLabel / CTkButton / CTkEntry
+            if hasattr(widget, "cget"):
+                try:
+                    text = widget.cget("text")
+                except Exception:
+                    pass
+            # tk.Text / tk.Entry
+            if not text:
+                try:
+                    text = widget.selection_get()
+                except Exception:
+                    pass
+            if not text:
+                try:
+                    text = widget.get("1.0", "end-1c")
+                except Exception:
+                    pass
+            if not text:
+                try:
+                    text = widget.get()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if text and text.strip():
+            self.clipboard_clear()
+            self.clipboard_append(text.strip())
+
     def select_tab(self, name):
+        # Change 2: reset client search when leaving or entering Clients tab
+        if name != "Clients" and hasattr(self, "clients_tab"):
+            self.clients_tab.search_var.set("")
+            self.clients_tab.refresh()
+
         self.current_tab = name
         for item_name, btn in self.nav_buttons.items():
             active = item_name == name
