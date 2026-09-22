@@ -7,7 +7,7 @@ from app.theme import COLORS, body_font, heading_font
 from app.format_utils import format_price_dh, MONTHS_FR
 from app.widgets import (
     section_title, primary_button, secondary_button, danger_button, MessageDialog, labeled_entry,
-    SegmentedToggle, status_pill, avatar_badge, ConfirmDialog
+    SegmentedToggle, status_pill, avatar_badge, ConfirmDialog, bind_search_debounce
 )
 from app import pdf_export
 from app.app_logger import log_exception
@@ -331,7 +331,7 @@ class FacturesTab(ctk.CTkFrame):
             width=240, fg_color=COLORS["bg_soft"], border_color=COLORS["border"], corner_radius=12
         )
         search_entry.pack(side="left", padx=(0, 10))
-        search_entry.bind("<KeyRelease>", lambda e: self.refresh())
+        bind_search_debounce(search_entry, self.refresh)
 
         self.status_toggle = SegmentedToggle(
             filter_frame, ["Toutes", "Payées", "Non payées"], self.status_filter.get(),
@@ -344,7 +344,7 @@ class FacturesTab(ctk.CTkFrame):
             fg_color=COLORS["bg_soft"], border_color=COLORS["border"], corner_radius=12
         )
         year_entry.pack(side="left", padx=(0, 10))
-        year_entry.bind("<KeyRelease>", lambda e: self.refresh())
+        bind_search_debounce(year_entry, self.refresh, delay_ms=500)
 
         month_menu = ctk.CTkOptionMenu(
             filter_frame, values=["Tous mois"] + MONTHS_FR, variable=self.month_filter,
@@ -533,6 +533,43 @@ class FacturesTab(ctk.CTkFrame):
             self.bulk_action_frame, "Défacturer", self.bulk_unfinalize, width=100
         ).pack(side="left")
 
+    def _render_one_row(self, inv, row):
+        """Render a single invoice row into the list grid."""
+        col_offset = 0
+        if self.show_checkboxes:
+            var = ctk.BooleanVar(value=False)
+            self.checkbox_vars[inv["id"]] = var
+            cb = ctk.CTkCheckBox(
+                self.list_frame, text="", variable=var,
+                command=lambda inv_id=inv["id"], v=var: self._on_checkbox_change(inv_id, v),
+                width=28, height=28, fg_color=COLORS["baby_blue_deep"],
+                hover_color=COLORS["baby_blue_dark"], checkbox_width=20,
+                checkbox_height=20, corner_radius=4
+            )
+            cb.grid(row=row, column=0, sticky="w", padx=8, pady=6)
+            col_offset = 1
+
+        ctk.CTkLabel(self.list_frame, text=inv["numero"], font=body_font(13, "bold"),
+                     text_color=COLORS["text"], anchor="w").grid(row=row, column=col_offset, sticky="w", padx=8, pady=6)
+
+        client_cell = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+        client_cell.grid(row=row, column=col_offset + 1, sticky="w", padx=8, pady=6)
+        avatar_badge(client_cell, inv["client_name"], size=28, font_size=11).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(client_cell, text=inv["client_name"], font=body_font(12),
+                     text_color=COLORS["text"]).pack(side="left")
+
+        ctk.CTkLabel(self.list_frame, text=inv["invoice_date"], font=body_font(12),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=col_offset + 2, sticky="w", padx=8, pady=6)
+        ctk.CTkLabel(self.list_frame, text=inv.get("deadline") or "Immédiat", font=body_font(12),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=col_offset + 3, sticky="w", padx=8, pady=6)
+
+        is_paid = inv["status"] == "paid"
+        status_pill(self.list_frame, "Payée" if is_paid else "Non payée",
+                    "success" if is_paid else "danger").grid(row=row, column=col_offset + 4, sticky="w", padx=8, pady=6)
+
+        secondary_button(self.list_frame, "Voir", lambda inv=inv: self.open_detail(inv), width=70).grid(
+            row=row, column=col_offset + 5, sticky="e", padx=8, pady=4)
+
     def _rebuild_rows(self):
         for w in self.list_frame.winfo_children():
             if w.grid_info().get("row", 0) > 0:
@@ -545,42 +582,16 @@ class FacturesTab(ctk.CTkFrame):
             empty.grid(row=1, column=0, columnspan=col_span, sticky="w", padx=8, pady=20)
             return
 
-        for idx, inv in enumerate(self.current_invoices):
-            row = idx + 1
-            col_offset = 0
+        CHUNK = 25
+        invoices = self.current_invoices
 
-            if self.show_checkboxes:
-                var = ctk.BooleanVar(value=False)
-                self.checkbox_vars[inv["id"]] = var
-                cb = ctk.CTkCheckBox(
-                    self.list_frame, text="", variable=var,
-                    command=lambda inv_id=inv["id"], v=var: self._on_checkbox_change(inv_id, v),
-                    width=28, height=28, fg_color=COLORS["baby_blue_deep"],
-                    hover_color=COLORS["baby_blue_dark"], checkbox_width=20,
-                    checkbox_height=20, corner_radius=4
-                )
-                cb.grid(row=row, column=0, sticky="w", padx=8, pady=6)
-                col_offset = 1
+        def render_chunk(start):
+            for idx in range(start, min(start + CHUNK, len(invoices))):
+                self._render_one_row(invoices[idx], idx + 1)
+            if start + CHUNK < len(invoices):
+                self.after(0, lambda: render_chunk(start + CHUNK))
 
-            ctk.CTkLabel(self.list_frame, text=inv["numero"], font=body_font(13, "bold"),
-                         text_color=COLORS["text"], anchor="w").grid(row=row, column=col_offset, sticky="w", padx=8, pady=6)
-
-            client_cell = ctk.CTkFrame(self.list_frame, fg_color="transparent")
-            client_cell.grid(row=row, column=col_offset + 1, sticky="w", padx=8, pady=6)
-            avatar_badge(client_cell, inv["client_name"], size=28, font_size=11).pack(side="left", padx=(0, 8))
-            ctk.CTkLabel(client_cell, text=inv["client_name"], font=body_font(12),
-                         text_color=COLORS["text"]).pack(side="left")
-
-            ctk.CTkLabel(self.list_frame, text=inv["invoice_date"], font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=col_offset + 2, sticky="w", padx=8, pady=6)
-            ctk.CTkLabel(self.list_frame, text=inv.get("deadline") or "Immédiat", font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=col_offset + 3, sticky="w", padx=8, pady=6)
-
-            is_paid = inv["status"] == "paid"
-            status_pill(self.list_frame, "Payée" if is_paid else "Non payée",
-                        "success" if is_paid else "danger").grid(row=row, column=col_offset + 4, sticky="w", padx=8, pady=6)
-
-            secondary_button(self.list_frame, "Voir", lambda inv=inv: self.open_detail(inv), width=70).grid(row=row, column=col_offset + 5, sticky="e", padx=8, pady=4)
+        render_chunk(0)
 
     def refresh(self):
         self.selected_invoice_ids.clear()

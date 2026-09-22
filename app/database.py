@@ -6,6 +6,7 @@ no raw SQL should be written elsewhere in the app.
 
 import sqlite3
 import os
+import threading
 from datetime import date
 
 from app.app_paths import get_database_path, migrate_legacy_user_files
@@ -13,20 +14,67 @@ from app.migrations import migrate
 
 DB_PATH = str(get_database_path())
 
+# Thread-local connection cache: reuse one open connection per thread instead of
+# opening and closing a new file handle on every single DB call.  The main UI
+# thread benefits most — navigation refreshes that used to open 5-10 connections
+# now reuse one.  WAL mode allows concurrent readers from other threads.
+_local = threading.local()
+
+
+class _CachedConnection:
+    """Thin wrapper around a sqlite3.Connection that makes .close() a no-op so
+    callers throughout the codebase can keep calling conn.close() without
+    actually destroying the cached connection.  Only commit() and execute()
+    (and the row_factory attribute) are forwarded to the real connection."""
+
+    def __init__(self, real_conn):
+        self._conn = real_conn
+
+    # Forward every attribute access to the real connection …
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    # … except close(), which we swallow.
+    def close(self):
+        pass  # intentionally a no-op — the connection stays alive in the cache
+
+    # cursor() must return a real cursor so callers can iterate it.
+    def cursor(self):
+        return self._conn.cursor()
+
+    def execute(self, sql, params=()):
+        return self._conn.execute(sql, params)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
 
 def get_connection():
+    """Return the cached connection for this thread, opening it if needed."""
+    cached = getattr(_local, "conn", None)
+    if cached is not None:
+        try:
+            cached.execute("SELECT 1")   # quick liveness check
+            return cached
+        except Exception:
+            pass   # dead connection — fall through to reopen
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    # timeout: if the file is briefly locked by another connection (e.g. the
-    # daily Telegram backup thread reading it at the same moment a UI action
-    # writes to it), retry for up to 10s instead of failing immediately with
-    # "database is locked". WAL mode lets that backup's read connection run
-    # concurrently with writes here rather than blocking on the same lock.
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 10000")
-    conn.row_factory = sqlite3.Row
-    return conn
+    real = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
+    real.execute("PRAGMA foreign_keys = ON")
+    real.execute("PRAGMA journal_mode = WAL")
+    real.execute("PRAGMA busy_timeout = 10000")
+    real.execute("PRAGMA cache_size = -8000")   # 8 MB page cache
+    real.execute("PRAGMA temp_store = MEMORY")
+    real.row_factory = sqlite3.Row
+    cached = _CachedConnection(real)
+    _local.conn = cached
+    return cached
+
+
+
 
 
 def init_db():
@@ -871,13 +919,13 @@ def list_client_balances():
 
 def list_clients_with_unpaid_invoices():
     """Returns clients that have at least one unpaid, finalized (numbered) invoice,
-    along with the total "montant" - the sum of all their assigned services' prices."""
+    along with the total "montant" - the sum of total_ttc of their unpaid invoices
+    (which reflects only the checked/selected items on each invoice)."""
     conn = get_connection()
     rows = conn.execute("""
         SELECT clients.id as client_id, clients.name as client_name,
                COUNT(CASE WHEN invoices.status = 'unpaid' AND invoices.numero IS NOT NULL THEN 1 END) as unpaid_count,
-               (SELECT COALESCE(SUM(price), 0) FROM client_service_prices
-                WHERE client_service_prices.client_id = clients.id) as montant
+               COALESCE(SUM(CASE WHEN invoices.status = 'unpaid' AND invoices.numero IS NOT NULL THEN invoices.total_ttc ELSE 0 END), 0) as montant
         FROM clients
         LEFT JOIN invoices ON invoices.client_id = clients.id
         GROUP BY clients.id

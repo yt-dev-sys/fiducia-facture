@@ -8,7 +8,7 @@ from app.format_utils import format_price_dh
 from app import receipt_export
 from app.app_logger import log_exception
 
-PAYMENT_TYPE_OPTIONS = ["Espèces", "Chèque", "Virement bancaire", "Tramsfare"]
+PAYMENT_TYPE_OPTIONS = ["Espèces", "Chèque", "Virement bancaire"]
 
 
 class InvoicePickerDialog(ctk.CTkToplevel):

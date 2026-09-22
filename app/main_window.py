@@ -179,10 +179,10 @@ class FactureApp(ctk.CTk):
             self.clipboard_append(text.strip())
 
     def select_tab(self, name):
-        # Change 2: reset client search when leaving or entering Clients tab
+        # Reset client search when leaving Clients tab — just clear the var,
+        # no DB refresh here; the next time Clients is visited, refresh() loads the full list.
         if name != "Clients" and hasattr(self, "clients_tab"):
             self.clients_tab.search_var.set("")
-            self.clients_tab.refresh()
 
         self.current_tab = name
         for item_name, btn in self.nav_buttons.items():
@@ -198,16 +198,23 @@ class FactureApp(ctk.CTk):
 
         self.tab_frames[name].tkraise()
 
-        if name == "Dashboard":
-            self.dashboard_tab.refresh()
-        elif name == "Payment":
-            self.payment_tab.refresh()
-        elif name == "Factures":
-            self.factures_tab.refresh()
-        elif name == "List SF":
-            self.list_sf_tab.refresh()
-        elif name == "Editions":
-            self.editions_tab.refresh()
+        # Defer data loading until after the frame is painted — the UI
+        # shows the new tab instantly while the DB query runs right after.
+        def _do_refresh():
+            if name == "Dashboard":
+                self.dashboard_tab.refresh()
+            elif name == "Payment":
+                self.payment_tab.refresh()
+            elif name == "Factures":
+                self.factures_tab.refresh()
+            elif name == "List SF":
+                self.list_sf_tab.refresh()
+            elif name == "Editions":
+                self.editions_tab.refresh()
+            elif name == "Clients":
+                self.clients_tab.refresh()
+
+        self.after_idle(_do_refresh)
 
     def _start_daily_telegram_backup(self):
         """Initialize Telegram (if configured) and attempt one daily backup.

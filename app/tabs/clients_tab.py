@@ -1,7 +1,7 @@
 import customtkinter as ctk
 from app import database as db
 from app.theme import COLORS, body_font
-from app.widgets import section_title, primary_button, secondary_button, danger_button, ConfirmDialog, MessageDialog, labeled_entry, bind_digits_only, avatar_badge
+from app.widgets import section_title, primary_button, secondary_button, danger_button, ConfirmDialog, MessageDialog, labeled_entry, bind_digits_only, avatar_badge, bind_search_debounce
 from app.format_utils import format_price_dh, parse_price
 from app.app_logger import log_exception
 
@@ -184,7 +184,7 @@ class ClientsTab(ctk.CTkFrame):
             width=320, fg_color=COLORS["bg_soft"], border_color=COLORS["border"], corner_radius=12
         )
         search_entry.pack(side="left")
-        search_entry.bind("<KeyRelease>", lambda e: self.refresh())
+        bind_search_debounce(search_entry, self.refresh)
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color=COLORS["white"])
         self.list_frame.pack(fill="both", expand=True, padx=24, pady=(0, 20))
@@ -200,6 +200,28 @@ class ClientsTab(ctk.CTkFrame):
             ctk.CTkLabel(self.list_frame, text=h, font=body_font(12, "bold"),
                          text_color=COLORS["text_muted"], anchor="w").grid(row=0, column=i, sticky="w", padx=8, pady=(0, 10))
 
+    def _render_one_client(self, c, row):
+        """Render a single client row into the list grid."""
+        name_cell = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+        name_cell.grid(row=row, column=0, sticky="w", padx=8, pady=6)
+        avatar_badge(name_cell, c["name"], size=28, font_size=11).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(name_cell, text=c["name"], font=body_font(13, "bold"),
+                     text_color=COLORS["text"]).pack(side="left")
+
+        ctk.CTkLabel(self.list_frame, text=c["ice"] or "-", font=body_font(12),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=1, sticky="w", padx=8, pady=6)
+        ctk.CTkLabel(self.list_frame, text=c["address"] or "-", font=body_font(12),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=2, sticky="w", padx=8, pady=6)
+        ctk.CTkLabel(self.list_frame, text=c.get("service_names") or "-", font=body_font(12),
+                     text_color=COLORS["text_muted"], anchor="w", wraplength=200, justify="left").grid(row=row, column=3, sticky="w", padx=8, pady=6)
+        ctk.CTkLabel(self.list_frame, text=format_price_dh(c.get("total_price", 0)), font=body_font(12, "bold"),
+                     text_color=COLORS["text"], anchor="w").grid(row=row, column=4, sticky="w", padx=8, pady=6)
+
+        actions = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+        actions.grid(row=row, column=5, sticky="e", padx=8, pady=4)
+        secondary_button(actions, "Modifier", lambda c=c: self.open_edit_dialog(c), width=90).pack(side="left", padx=4)
+        danger_button(actions, "Suppr.", lambda c=c: self.confirm_delete(c), width=70).pack(side="left", padx=4)
+
     def refresh(self):
         for w in self.list_frame.winfo_children()[6:]:
             w.destroy()
@@ -211,27 +233,15 @@ class ClientsTab(ctk.CTkFrame):
             empty.grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=20)
             return
 
-        for idx, c in enumerate(clients):
-            row = idx + 1
-            name_cell = ctk.CTkFrame(self.list_frame, fg_color="transparent")
-            name_cell.grid(row=row, column=0, sticky="w", padx=8, pady=6)
-            avatar_badge(name_cell, c["name"], size=28, font_size=11).pack(side="left", padx=(0, 8))
-            ctk.CTkLabel(name_cell, text=c["name"], font=body_font(13, "bold"),
-                         text_color=COLORS["text"]).pack(side="left")
+        CHUNK = 25
 
-            ctk.CTkLabel(self.list_frame, text=c["ice"] or "-", font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=1, sticky="w", padx=8, pady=6)
-            ctk.CTkLabel(self.list_frame, text=c["address"] or "-", font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=2, sticky="w", padx=8, pady=6)
-            ctk.CTkLabel(self.list_frame, text=c.get("service_names") or "-", font=body_font(12),
-                         text_color=COLORS["text_muted"], anchor="w", wraplength=200, justify="left").grid(row=row, column=3, sticky="w", padx=8, pady=6)
-            ctk.CTkLabel(self.list_frame, text=format_price_dh(c.get("total_price", 0)), font=body_font(12, "bold"),
-                         text_color=COLORS["text"], anchor="w").grid(row=row, column=4, sticky="w", padx=8, pady=6)
+        def render_chunk(start):
+            for idx in range(start, min(start + CHUNK, len(clients))):
+                self._render_one_client(clients[idx], idx + 1)
+            if start + CHUNK < len(clients):
+                self.list_frame.after(0, lambda: render_chunk(start + CHUNK))
 
-            actions = ctk.CTkFrame(self.list_frame, fg_color="transparent")
-            actions.grid(row=row, column=5, sticky="e", padx=8, pady=4)
-            secondary_button(actions, "Modifier", lambda c=c: self.open_edit_dialog(c), width=90).pack(side="left", padx=4)
-            danger_button(actions, "Suppr.", lambda c=c: self.confirm_delete(c), width=70).pack(side="left", padx=4)
+        render_chunk(0)
 
     def open_new_dialog(self):
         ClientFormDialog(self, self.refresh)

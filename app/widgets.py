@@ -226,6 +226,19 @@ class ConfirmDialog(ctk.CTkToplevel):
         danger_button(btn_frame, "Confirmer", confirm_and_close, width=110).pack(side="left", padx=8)
 
 
+def bind_search_debounce(entry_widget, callback, delay_ms=300):
+    """Bind a search entry so the callback fires only after the user stops typing
+    for `delay_ms` milliseconds. Prevents a DB query on every single keystroke."""
+    _after_id = [None]
+
+    def on_key(_event=None):
+        if _after_id[0] is not None:
+            entry_widget.after_cancel(_after_id[0])
+        _after_id[0] = entry_widget.after(delay_ms, callback)
+
+    entry_widget.bind("<KeyRelease>", on_key)
+
+
 class MessageDialog(ctk.CTkToplevel):
     def __init__(self, master, title, message, is_error=False):
         super().__init__(master)
