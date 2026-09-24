@@ -447,8 +447,8 @@ def list_clients(search: str = ""):
     """
     params = []
     if search:
-        query += " WHERE clients.name LIKE ? OR clients.ice LIKE ?"
-        params += [f"%{search}%", f"%{search}%"]
+        query += " WHERE clients.name LIKE ? OR clients.ice LIKE ? OR clients.notes LIKE ?"
+        params += [f"%{search}%", f"%{search}%", f"%{search}%"]
     query += " GROUP BY clients.id ORDER BY clients.name"
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -789,8 +789,8 @@ def list_invoices(search: str = "", status: str = None, year: int = None, month:
     """
     params = []
     if search:
-        query += " AND (invoices.numero LIKE ? OR clients.name LIKE ?)"
-        params += [f"%{search}%", f"%{search}%"]
+        query += " AND (invoices.numero LIKE ? OR clients.name LIKE ? OR invoices.notes LIKE ?)"
+        params += [f"%{search}%", f"%{search}%", f"%{search}%"]
     if status:
         query += " AND invoices.status = ?"
         params.append(status)

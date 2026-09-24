@@ -382,7 +382,7 @@ class FacturesTab(ctk.CTkFrame):
                 ("deadline", "Deadline"),
                 ("status", "Statut"),
             ]
-            col_weights = [1, 2, 3, 2, 2, 2, 1]
+            col_weights = [1, 2, 3, 2, 2, 2, 1, 1]
             header_offset = 1
         else:
             self.sort_headers = [
@@ -392,7 +392,7 @@ class FacturesTab(ctk.CTkFrame):
                 ("deadline", "Deadline"),
                 ("status", "Statut"),
             ]
-            col_weights = [2, 3, 2, 2, 2, 1]
+            col_weights = [2, 3, 2, 2, 2, 1, 1]
             header_offset = 0
 
         for i, w in enumerate(col_weights):
@@ -568,7 +568,10 @@ class FacturesTab(ctk.CTkFrame):
                     "success" if is_paid else "danger").grid(row=row, column=col_offset + 4, sticky="w", padx=8, pady=6)
 
         secondary_button(self.list_frame, "Voir", lambda inv=inv: self.open_detail(inv), width=70).grid(
-            row=row, column=col_offset + 5, sticky="e", padx=8, pady=4)
+            row=row, column=col_offset + 5, sticky="e", padx=4, pady=4)
+
+        danger_button(self.list_frame, "Défacturer", lambda inv=inv: self.confirm_unfinalize(inv), width=95).grid(
+            row=row, column=col_offset + 6, sticky="e", padx=4, pady=4)
 
     def _rebuild_rows(self):
         for w in self.list_frame.winfo_children():
@@ -578,7 +581,7 @@ class FacturesTab(ctk.CTkFrame):
         if not self.current_invoices:
             empty = ctk.CTkLabel(self.list_frame, text="Aucune facture trouvée.",
                                   font=body_font(13), text_color=COLORS["text_muted"])
-            col_span = 7 if self.show_checkboxes else 6
+            col_span = 8 if self.show_checkboxes else 7
             empty.grid(row=1, column=0, columnspan=col_span, sticky="w", padx=8, pady=20)
             return
 
@@ -658,3 +661,21 @@ class FacturesTab(ctk.CTkFrame):
                 log_exception("Défacturation groupée", e)
                 MessageDialog(self, "Erreur", f"Impossible de défacturer une facture : {e}", is_error=True)
         self.refresh()
+
+    def confirm_unfinalize(self, inv):
+        """Per-row Défacturer button — confirm then unfinalize a single invoice."""
+        ConfirmDialog(
+            self,
+            f"Défacturer la facture {inv['numero']} ?\n\n"
+            "Elle redeviendra un brouillon (sans numéro) et sera déplacée vers l'onglet List SF.",
+            lambda: self._do_single_unfinalize(inv["id"])
+        )
+
+    def _do_single_unfinalize(self, inv_id):
+        try:
+            db.unfinalize_invoice(inv_id)
+        except Exception as e:
+            log_exception("Défacturation", e)
+            MessageDialog(self, "Erreur", f"Impossible de défacturer cette facture : {e}", is_error=True)
+        self.refresh()
+
