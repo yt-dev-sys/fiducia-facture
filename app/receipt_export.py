@@ -20,12 +20,16 @@ BLACK = (0, 0, 0)
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.jpeg")
 
 
-def generate_receipt_pdf(invoice_id: int, payment_date: str, output_path: str):
-    """Builds the payment receipt PDF for the given invoice and writes it to output_path."""
+def generate_receipt_pdf(invoice_id: int, payment_date: str, output_path: str, recu_de: str = None):
+    """Builds the payment receipt PDF for the given invoice and writes it to output_path.
+    recu_de: the text to show in the 'Reçu de' field; defaults to client name if not provided."""
     inv = db.get_invoice(invoice_id)
     if inv is None:
         raise ValueError("Facture introuvable.")
     total_ttc, _, _ = db.compute_invoice_totals(inv)
+
+    # Resolve what to show in "Reçu de"
+    recu_de_text = recu_de if recu_de else inv["client_name"]
 
     c = canvas.Canvas(output_path, pagesize=(PAGE_W, PAGE_H))
     c.setFillColorRGB(*BLACK)
@@ -71,7 +75,7 @@ def generate_receipt_pdf(invoice_id: int, payment_date: str, output_path: str):
     c.setFont("Helvetica-Bold", 10.5)
     c.drawString(label_x, y, "Reçu de :")
     c.setFont("Helvetica", 10.5)
-    c.drawString(value_x + 2 * mm, y, inv["client_name"])
+    c.drawString(value_x + 2 * mm, y, recu_de_text)
     c.line(value_x, y - 1.5 * mm, right_edge, y - 1.5 * mm)
 
     y -= 12 * mm

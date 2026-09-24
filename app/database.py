@@ -653,14 +653,10 @@ def create_invoice(client_id, business_type, tva_rate, deadline="Immédiat", inv
 
 
 def finalize_invoice(invoice_id):
-    """Promotes a draft (numero = NULL) into an official, numbered facture.
-    A fresh sequence_order slot is assigned every time an invoice is finalized -
-    including a re-facturation after a défacturation - so it's always placed at
-    the end of the current sequence rather than reserving/restoring an old spot.
-    The displayed numero is then recomputed for the whole year via
-    _resequence_year() so it's always gapless. Returns the numero. No-op if the
-    invoice already has one."""
+    """Promotes a draft into an official numbered facture. Also increments
+    service_stats cumulative totals for each checked item."""
     conn = get_connection()
+    items_to_count = []
     try:
         row = conn.execute(
             "SELECT numero, invoice_date FROM invoices WHERE id = ?",
@@ -673,20 +669,23 @@ def finalize_invoice(invoice_id):
         year = int(row["invoice_date"].split("-")[0])
         seq = _next_sequence_order(conn, year)
         conn.execute("UPDATE invoices SET sequence_order = ? WHERE id = ?", (seq, invoice_id))
-        # Temporary placeholder just to mark this row "finalized" (numero NOT NULL) so
-        # _resequence_year picks it up; it's immediately overwritten with the real,
-        # gapless number below.
         conn.execute("UPDATE invoices SET numero = ? WHERE id = ?", (f"TMP-{invoice_id}", invoice_id))
         _resequence_year(conn, year)
+        items_to_count = conn.execute(
+            "SELECT service_id, line_total FROM invoice_items WHERE invoice_id = ?",
+            (invoice_id,)
+        ).fetchall()
         conn.commit()
         numero = conn.execute("SELECT numero FROM invoices WHERE id = ?", (invoice_id,)).fetchone()["numero"]
-        return numero
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-
+    for item in items_to_count:
+        if item["service_id"]:
+            add_to_service_stat(item["service_id"], item["line_total"])
+    return numero
 
 def _set_invoice_items(conn, invoice_id, selected_items):
     """Replaces all invoice_items for this invoice with the given selection.
@@ -855,10 +854,15 @@ def set_invoice_paid(invoice_id, payment_type, payment_date):
 
 def delete_invoice(invoice_id):
     """Deletes an invoice. If it was a finalized facture, the remaining factures of
-    that year are resequenced afterwards so no permanent gap is left behind."""
+    that year are resequenced afterwards so no permanent gap is left behind.
+    Also reduces service_stats cumulative totals for each checked item."""
     conn = get_connection()
     try:
         row = conn.execute("SELECT numero, invoice_date FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        # Collect items before deleting so we can subtract their totals from service_stats
+        items = conn.execute(
+            "SELECT service_id, line_total FROM invoice_items WHERE invoice_id = ?", (invoice_id,)
+        ).fetchall()
         conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", (invoice_id,))
         conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
         if row is not None and row["numero"] is not None:
@@ -870,6 +874,10 @@ def delete_invoice(invoice_id):
         raise
     finally:
         conn.close()
+    # Subtract from service stats AFTER the commit (outside the transaction)
+    for item in items:
+        if item["service_id"]:
+            subtract_from_service_stat(item["service_id"], item["line_total"])
 
 
 def unfinalize_invoice(invoice_id):
@@ -917,21 +925,34 @@ def list_client_balances():
     return [dict(r) for r in rows]
 
 
-def list_clients_with_unpaid_invoices():
+def list_clients_with_unpaid_invoices(search: str = "", month: int = None):
     """Returns clients that have at least one unpaid, finalized (numbered) invoice,
-    along with the total "montant" - the sum of total_ttc of their unpaid invoices
-    (which reflects only the checked/selected items on each invoice)."""
+    optionally filtered by search (client name or invoice notes) and invoice creation month.
+    montant reflects only checked/selected items (stored as total_ttc on the invoice)."""
     conn = get_connection()
-    rows = conn.execute("""
+    params = []
+    where_clauses = ["invoices.status = 'unpaid'", "invoices.numero IS NOT NULL"]
+
+    if month:
+        where_clauses.append("CAST(strftime('%m', invoices.invoice_date) AS INTEGER) = ?")
+        params.append(month)
+
+    if search:
+        where_clauses.append("(clients.name LIKE ? OR invoices.notes LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where_sql = " AND ".join(where_clauses)
+
+    rows = conn.execute(f"""
         SELECT clients.id as client_id, clients.name as client_name,
-               COUNT(CASE WHEN invoices.status = 'unpaid' AND invoices.numero IS NOT NULL THEN 1 END) as unpaid_count,
-               COALESCE(SUM(CASE WHEN invoices.status = 'unpaid' AND invoices.numero IS NOT NULL THEN invoices.total_ttc ELSE 0 END), 0) as montant
+               COUNT(invoices.id) as unpaid_count,
+               COALESCE(SUM(invoices.total_ttc), 0) as montant
         FROM clients
-        LEFT JOIN invoices ON invoices.client_id = clients.id
+        JOIN invoices ON invoices.client_id = clients.id
+        WHERE {where_sql}
         GROUP BY clients.id
-        HAVING unpaid_count > 0
         ORDER BY clients.name
-    """).fetchall()
+    """, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -971,3 +992,127 @@ def compute_invoice_totals(invoice):
     invoice's line items on every single call, which was the main source of the
     N+1-query slowdown in List SF, Factures, and the Editions/reports totals."""
     return invoice["total_ttc"], invoice["subtotal_ht"], invoice["tva_amount"]
+
+
+# ---------------- Service stats (dashboard leaderboard) ----------------
+
+def _ensure_service_stats_table(conn):
+    """Create service_stats table if it doesn't exist yet."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS service_stats (
+            service_id   INTEGER PRIMARY KEY,
+            cumulative   REAL    NOT NULL DEFAULT 0,
+            reset_date   TEXT    NOT NULL DEFAULT '1970-01-01',
+            FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+        )
+    """)
+    conn.commit()
+
+
+def _sync_service_stats_rows(conn):
+    """Make sure every service has a row in service_stats (insert missing ones with 0)."""
+    conn.execute("""
+        INSERT OR IGNORE INTO service_stats (service_id, cumulative, reset_date)
+        SELECT id, 0, '1970-01-01' FROM services
+    """)
+    conn.commit()
+
+
+def get_service_leaderboard():
+    """Top 10 services by cumulative DH value (checked items only, deletions reduce it).
+    Each row: {service_id, name, cumulative}."""
+    conn = get_connection()
+    _ensure_service_stats_table(conn)
+    _sync_service_stats_rows(conn)
+
+    rows = conn.execute("""
+        SELECT s.id as service_id, s.name,
+               COALESCE(ss.cumulative, 0) as cumulative
+        FROM services s
+        LEFT JOIN service_stats ss ON ss.service_id = s.id
+        ORDER BY cumulative DESC
+        LIMIT 10
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def rebuild_service_stats_from_scratch(reset_date: str = None):
+    """Recompute cumulative totals for all services from all existing invoice_items
+    that belong to finalized invoices (numero IS NOT NULL) created on or after reset_date.
+    If reset_date is None, counts everything.
+    Called on first launch (to populate) and when the user hits Reset."""
+    if reset_date is None:
+        reset_date = "1970-01-01"
+    conn = get_connection()
+    _ensure_service_stats_table(conn)
+    try:
+        # Zero out all stats and set the new reset_date
+        conn.execute("UPDATE service_stats SET cumulative = 0, reset_date = ?", (reset_date,))
+        # Insert missing rows too
+        conn.execute("""
+            INSERT OR IGNORE INTO service_stats (service_id, cumulative, reset_date)
+            SELECT id, 0, ? FROM services
+        """, (reset_date,))
+        # Sum line_total for checked items (invoice_items) from finalized invoices
+        # created on or after reset_date
+        conn.execute("""
+            UPDATE service_stats
+            SET cumulative = (
+                SELECT COALESCE(SUM(ii.line_total), 0)
+                FROM invoice_items ii
+                JOIN invoices inv ON inv.id = ii.invoice_id
+                WHERE ii.service_id = service_stats.service_id
+                  AND inv.numero IS NOT NULL
+                  AND inv.invoice_date >= ?
+            )
+            WHERE service_id IN (SELECT id FROM services)
+        """, (reset_date,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def add_to_service_stat(service_id: int, amount: float):
+    """Increment a service's cumulative total (called when a new invoice is finalized)."""
+    if not service_id:
+        return
+    conn = get_connection()
+    _ensure_service_stats_table(conn)
+    try:
+        conn.execute("""
+            INSERT INTO service_stats (service_id, cumulative, reset_date)
+            VALUES (?, ?, '1970-01-01')
+            ON CONFLICT(service_id) DO UPDATE SET cumulative = cumulative + excluded.cumulative
+        """, (service_id, amount))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def subtract_from_service_stat(service_id: int, amount: float):
+    """Decrement a service's cumulative total (called when an invoice is deleted)."""
+    if not service_id:
+        return
+    conn = get_connection()
+    _ensure_service_stats_table(conn)
+    try:
+        conn.execute("""
+            UPDATE service_stats SET cumulative = MAX(0, cumulative - ?)
+            WHERE service_id = ?
+        """, (amount, service_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_service_stats_reset_date():
+    """Return the reset_date stored in service_stats (same for all rows), or '1970-01-01'."""
+    conn = get_connection()
+    _ensure_service_stats_table(conn)
+    row = conn.execute("SELECT reset_date FROM service_stats LIMIT 1").fetchone()
+    conn.close()
+    return row["reset_date"] if row else "1970-01-01"
