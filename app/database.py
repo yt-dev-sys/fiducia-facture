@@ -1109,6 +1109,28 @@ def subtract_from_service_stat(service_id: int, amount: float):
         conn.close()
 
 
+def get_top_services_for_month(year: int, month: int, limit: int = 5):
+    """Returns the top `limit` services by total checked-item value for invoices
+    created in the given year/month (finalized only, checked items via invoice_items).
+    Each row: {service_id, name, total}."""
+    conn = get_connection()
+    prefix = f"{year:04d}-{month:02d}"
+    rows = conn.execute("""
+        SELECT s.id as service_id, s.name,
+               COALESCE(SUM(ii.line_total), 0) as total
+        FROM services s
+        JOIN invoice_items ii ON ii.service_id = s.id
+        JOIN invoices inv ON inv.id = ii.invoice_id
+        WHERE inv.numero IS NOT NULL
+          AND inv.invoice_date LIKE ?
+        GROUP BY s.id
+        ORDER BY total DESC
+        LIMIT ?
+    """, (f"{prefix}%", limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_service_stats_reset_date():
     """Return the reset_date stored in service_stats (same for all rows), or '1970-01-01'."""
     conn = get_connection()
