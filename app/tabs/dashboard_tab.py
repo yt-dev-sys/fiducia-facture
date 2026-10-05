@@ -97,7 +97,7 @@ class DashboardTab(ctk.CTkFrame):
         if not rows:
             ctk.CTkLabel(
                 self.leaderboard_frame, text="Aucun service.",
-                font=body_font(12), text_color=COLORS["text_muted"]
+                font=body_font(15), text_color=COLORS["text_muted"]
             ).pack(anchor="w", padx=12, pady=10)
             return
 
@@ -110,20 +110,20 @@ class DashboardTab(ctk.CTkFrame):
                 sep.pack(fill="x", padx=12)
 
             rank_label = ctk.CTkLabel(
-                item, text=f"{i + 1}.", font=body_font(12, "bold"),
-                text_color=COLORS["text_muted"], width=24, anchor="w"
+                item, text=f"{i + 1}.", font=body_font(15, "bold"),
+                text_color=COLORS["text_muted"], width=30, anchor="w"
             )
             rank_label.pack(side="left")
 
             name_label = ctk.CTkLabel(
-                item, text=row["name"], font=body_font(12),
+                item, text=row["name"], font=body_font(15),
                 text_color=COLORS["text"], anchor="w"
             )
             name_label.pack(side="left", expand=True, fill="x", padx=(4, 8))
 
             val_label = ctk.CTkLabel(
                 item, text=f"{row['cumulative']:,.0f} DH".replace(",", " "),
-                font=body_font(12, "bold"), text_color=COLORS["baby_blue_deep"], anchor="e"
+                font=body_font(15, "bold"), text_color=COLORS["baby_blue_deep"], anchor="e"
             )
             val_label.pack(side="right")
 

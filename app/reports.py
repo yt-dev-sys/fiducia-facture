@@ -3,7 +3,7 @@ Generates the 3 "Editions" report PDFs: Etat des ventes, Etat des paiements, Eta
 Simple table reports (title + table), no company letterhead.
 """
 
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
@@ -15,7 +15,7 @@ BLACK = (0, 0, 0)
 WHITE = (1, 1, 1)
 GRAY_LIGHT = (0.94, 0.97, 0.98)
 
-PAGE_W, PAGE_H = landscape(A4)
+PAGE_W, PAGE_H = A4          # portrait
 MARGIN = 15 * mm
 ROW_H = 8 * mm
 HEADER_H = 9 * mm
@@ -140,7 +140,8 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
 
     title = f"État des ventes — {month:02d}/{year}"
     headers = ["Date", "N° Facture", "Client", "MT"]
-    col_weights = [0.15, 0.18, 0.42, 0.25]
+    # Portrait-friendly column weights (narrower page than landscape)
+    col_weights = [0.16, 0.20, 0.40, 0.24]
 
     profile = db.get_company_profile() or {}
     company_line = profile.get("name") or ""
@@ -158,9 +159,9 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
     # so it aligns perfectly with the main table above.
     label_col_x  = col_x(2) + 3 * mm
     value_col_x  = col_x(3) + 3 * mm
-    value_col_rx = col_x(3) + col_widths[3] - 3 * mm   # right edge of MT column
+    mt_center    = col_x(3) + col_widths[3] / 2          # MT column center (header, values, summary)
 
-    c = canvas.Canvas(output_path, pagesize=landscape(A4))
+    c = canvas.Canvas(output_path, pagesize=A4)
 
     def _draw_page_header():
         c.setFillColorRGB(*BLACK)
@@ -179,12 +180,15 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
         c.setFillColorRGB(*WHITE)
         c.setFont("Helvetica-Bold", 9.5)
         for i, h in enumerate(headers):
-            c.drawString(col_x(i) + 3 * mm, y - HEADER_H + 3 * mm, h)
+            if i == 3:  # MT header centered
+                c.drawCentredString(mt_center, y - HEADER_H + 3 * mm, h)
+            else:
+                c.drawString(col_x(i) + 3 * mm, y - HEADER_H + 3 * mm, h)
         return y - HEADER_H
 
     # How much vertical space does the summary need?
     # Total TTC + TVA + separator + Service/HT header + one row per service
-    summary_rows_count = 2 + 1 + len(all_services)  # 2 fixed + separator + services
+    summary_rows_count = 2 + 1 + 1 + len(all_services) + 1  # TTC+TVA, separator, header, services, services total
     summary_h = summary_rows_count * ROW_H + 6 * mm  # +gap before block
 
     _draw_page_header()
@@ -194,7 +198,9 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
     # --- Data rows ---
     for idx, row in enumerate(rows):
         # If not enough space for this row plus the summary, start new page
-        if y - ROW_H < MARGIN + summary_h:
+        # Reserve room for the summary block only on the last data row
+        reserve = summary_h if idx == len(rows) - 1 else 0
+        if y - ROW_H < MARGIN + reserve:
             c.showPage()
             _draw_page_header()
             y = PAGE_H - MARGIN - 24 * mm
@@ -206,7 +212,10 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
         c.setFillColorRGB(*BLACK)
         c.setFont("Helvetica", 9)
         for i, cell in enumerate(row):
-            c.drawString(col_x(i) + 3 * mm, y - ROW_H + 2.5 * mm, str(cell))
+            if i == 3:  # MT value centered
+                c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, str(cell))
+            else:
+                c.drawString(col_x(i) + 3 * mm, y - ROW_H + 2.5 * mm, str(cell))
         y -= ROW_H
 
     if not rows:
@@ -226,7 +235,7 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
     c.setFillColorRGB(*WHITE)
     c.setFont("Helvetica-Bold", 9)
     c.drawString(label_col_x, y - ROW_H + 2.5 * mm, "Total TTC")
-    c.drawRightString(value_col_rx, y - ROW_H + 2.5 * mm, format_price_dh(A) if rows else "")
+    c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, format_price_dh(A) if rows else "")
     y -= ROW_H
 
     # Row 2: TVA
@@ -235,7 +244,7 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
     c.setFillColorRGB(*BLACK)
     c.setFont("Helvetica", 9)
     c.drawString(label_col_x, y - ROW_H + 2.5 * mm, "TVA")
-    c.drawRightString(value_col_rx, y - ROW_H + 2.5 * mm, format_price_dh(tva) if rows else "")
+    c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, format_price_dh(tva) if rows else "")
     y -= ROW_H
 
     # Separator line
@@ -250,10 +259,11 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
     c.setFillColorRGB(*WHITE)
     c.setFont("Helvetica-Bold", 9)
     c.drawString(label_col_x, y - ROW_H + 2.5 * mm, "Service")
-    c.drawRightString(value_col_rx, y - ROW_H + 2.5 * mm, "HT")
+    c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, "HT")
     y -= ROW_H
 
     # One row per service
+    services_ht_total = 0.0
     for idx, svc in enumerate(all_services):
         # New page if needed
         if y - ROW_H < MARGIN:
@@ -266,17 +276,32 @@ def generate_etat_des_ventes(year: int, month: int, output_path: str):
             c.setFillColorRGB(*WHITE)
             c.setFont("Helvetica-Bold", 9)
             c.drawString(label_col_x, y - ROW_H + 2.5 * mm, "Service (suite)")
-            c.drawRightString(value_col_rx, y - ROW_H + 2.5 * mm, "HT")
+            c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, "HT")
             y -= ROW_H
 
         svc_ht = svc["total"] / 1.2
+        services_ht_total += svc_ht
         bg = GRAY_LIGHT if idx % 2 == 0 else WHITE
         c.setFillColorRGB(*bg)
         c.rect(col_x(2), y - ROW_H, col_widths[2] + col_widths[3], ROW_H, fill=1, stroke=0)
         c.setFillColorRGB(*BLACK)
         c.setFont("Helvetica", 9)
         c.drawString(label_col_x, y - ROW_H + 2.5 * mm, svc["name"])
-        c.drawRightString(value_col_rx, y - ROW_H + 2.5 * mm, format_price_dh(svc_ht))
+        c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, format_price_dh(svc_ht))
+        y -= ROW_H
+
+    # Total of all services HT
+    if all_services:
+        if y - ROW_H < MARGIN:
+            c.showPage()
+            _draw_page_header()
+            y = PAGE_H - MARGIN - 24 * mm
+        c.setFillColorRGB(*TEAL)
+        c.rect(col_x(2), y - ROW_H, col_widths[2] + col_widths[3], ROW_H, fill=1, stroke=0)
+        c.setFillColorRGB(*WHITE)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(label_col_x, y - ROW_H + 2.5 * mm, "Total services HT")
+        c.drawCentredString(mt_center, y - ROW_H + 2.5 * mm, format_price_dh(services_ht_total))
         y -= ROW_H
 
     c.save()
@@ -301,7 +326,7 @@ def generate_etat_des_paiements(year: int, month: int, output_path: str):
             inv.get("payment_type") or "-",
         ])
 
-    c = canvas.Canvas(output_path, pagesize=landscape(A4))
+    c = canvas.Canvas(output_path, pagesize=A4)
     _draw_table(
         c, f"État des paiements — {month:02d}/{year}",
         ["Facture", "Client", "Montant TTC", "Date de paiement", "Moyen de paiement"],
@@ -328,7 +353,7 @@ def generate_etat_des_creances(output_path: str):
             format_price_dh(total_ttc),
         ])
 
-    c = canvas.Canvas(output_path, pagesize=landscape(A4))
+    c = canvas.Canvas(output_path, pagesize=A4)
     _draw_table(
         c, "État des créances",
         ["Client", "Facture", "Montant TTC"],
