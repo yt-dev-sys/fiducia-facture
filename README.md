@@ -66,7 +66,7 @@ Le workflow publie un artefact téléchargeable nommé selon la branche ou le ta
 La version est définie dans `app/version.py`. Pour publier une version, mettez à jour `APP_VERSION`, poussez les changements, puis créez un tag correspondant, par exemple :
 
 ```text
-v1.0.0
+v2.0.0
 ```
 
 Le workflow construit alors l'installateur et publie automatiquement l'EXE et son fichier `.sha256` dans la GitHub Release.
@@ -87,4 +87,22 @@ Documents\\Fiducia Facture\\
 ├── update\\
 ├── cache\\
 └── state\\
+```
+
+## Temp Client
+
+L'onglet **Temp Client** fonctionne comme **Clients**, mais un client temporaire est masqué automatiquement
+(`is_hidden = 1`) dès que toutes ses factures sont payées. Rien n'est supprimé : le client et ses factures restent
+dans la base. S'il reçoit de nouveau une facture impayée, il réapparaît. Les clients normaux ne sont jamais masqués.
+
+Pour nettoyer la base plus tard (fermer l'application et faire une sauvegarde avant) :
+
+```sql
+-- voir les clients temporaires masqués
+SELECT id, name, hidden_at FROM clients WHERE is_hidden = 1;
+
+-- les supprimer définitivement, avec leurs factures
+DELETE FROM invoice_items WHERE invoice_id IN (SELECT id FROM invoices WHERE client_id IN (SELECT id FROM clients WHERE is_hidden = 1));
+DELETE FROM invoices WHERE client_id IN (SELECT id FROM clients WHERE is_hidden = 1);
+DELETE FROM clients WHERE is_hidden = 1;
 ```

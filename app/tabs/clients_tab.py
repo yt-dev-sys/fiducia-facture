@@ -60,9 +60,10 @@ class ServicePriceRow(ctk.CTkFrame):
 
 
 class ClientFormDialog(ctk.CTkToplevel):
-    def __init__(self, master, on_saved, client=None):
+    def __init__(self, master, on_saved, client=None, client_type="normal"):
         super().__init__(master)
-        self.title("Modifier client" if client else "Nouveau client")
+        self.client_type = client_type
+        self.title("Modifier client" if client else ("Nouveau client temporaire" if client_type == "temp" else "Nouveau client"))
         self.geometry("460x700")
         self.configure(fg_color=COLORS["white"])
         self.resizable(False, False)
@@ -154,7 +155,7 @@ class ClientFormDialog(ctk.CTkToplevel):
                     name,
                     address=self.address_var.get(), ice=self.ice_var.get(), if_number=self.if_var.get(),
                     phone=self.phone_var.get(), email=self.email_var.get(),
-                    service_price_rows=service_price_rows
+                    service_price_rows=service_price_rows, client_type=self.client_type
                 )
             self.destroy()
             self.on_saved()
@@ -164,8 +165,12 @@ class ClientFormDialog(ctk.CTkToplevel):
 
 
 class ClientsTab(ctk.CTkFrame):
-    def __init__(self, master):
+    """Clients list. client_type 'normal' = the Clients tab, 'temp' = the Temp Client tab
+    (identical, except temp clients are hidden automatically once all their invoices are paid)."""
+
+    def __init__(self, master, client_type="normal"):
         super().__init__(master, fg_color=COLORS["bg"])
+        self.client_type = client_type
         self.search_var = ctk.StringVar()
         self._build_ui()
         self.refresh()
@@ -174,7 +179,7 @@ class ClientsTab(ctk.CTkFrame):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=24, pady=(20, 10))
 
-        section_title(header, "Clients").pack(side="left")
+        section_title(header, "Temp Client" if self.client_type == "temp" else "Clients").pack(side="left")
         primary_button(header, "+ Nouveau client", self.open_new_dialog, width=170).pack(side="right")
 
         search_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -226,9 +231,12 @@ class ClientsTab(ctk.CTkFrame):
         for w in self.list_frame.winfo_children()[6:]:
             w.destroy()
 
-        clients = db.list_clients(self.search_var.get().strip())
+        clients = db.list_clients(self.search_var.get().strip(), client_type=self.client_type)
         if not clients:
-            empty = ctk.CTkLabel(self.list_frame, text="Aucun client. Cliquez sur \"+ Nouveau client\" pour commencer.",
+            empty_text = ("Aucun client temporaire. Cliquez sur \"+ Nouveau client\" pour commencer."
+                          if self.client_type == "temp"
+                          else "Aucun client. Cliquez sur \"+ Nouveau client\" pour commencer.")
+            empty = ctk.CTkLabel(self.list_frame, text=empty_text,
                                   font=body_font(13), text_color=COLORS["text_muted"])
             empty.grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=20)
             return
@@ -244,7 +252,7 @@ class ClientsTab(ctk.CTkFrame):
         render_chunk(0)
 
     def open_new_dialog(self):
-        ClientFormDialog(self, self.refresh)
+        ClientFormDialog(self, self.refresh, client_type=self.client_type)
 
     def open_edit_dialog(self, client):
         ClientFormDialog(self, self.refresh, client=client)

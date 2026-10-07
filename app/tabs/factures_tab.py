@@ -26,7 +26,9 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         self.grab_set()
 
         self.on_saved = on_saved
-        self.clients = db.list_clients()
+        # Hidden (fully paid) temp clients are not selectable, except the one already
+        # attached to the invoice being edited, so editing never silently swaps its client.
+        self.clients = db.list_clients(include_client_id=invoice["client_id"] if invoice else None)
         profile = db.get_company_profile() or {}
 
         if not self.clients:

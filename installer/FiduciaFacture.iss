@@ -1,5 +1,5 @@
 #define MyAppName "Fiducia Facture"
-#define MyAppVersion "0.0.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "Fiducia Facture"
 #define MyAppExeName "Fiducia Facture.exe"
 

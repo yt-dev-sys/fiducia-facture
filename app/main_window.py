@@ -19,6 +19,7 @@ from app.app_logger import log_exception, log_info
 NAV_ITEMS = [
     ("Dashboard", "🏠"),
     ("Clients", "👥"),
+    ("Temp Client", "⏳"),
     ("Services", "🧰"),
     ("List SF", "📝"),
     ("Factures", "🧾"),
@@ -103,6 +104,7 @@ class FactureApp(ctk.CTk):
 
         self.dashboard_tab = DashboardTab(content)
         self.clients_tab = ClientsTab(content)
+        self.temp_clients_tab = ClientsTab(content, client_type="temp")
         self.services_tab = ServicesTab(content)
         self.list_sf_tab = ListSFTab(content)
         self.factures_tab = FacturesTab(content)
@@ -112,6 +114,7 @@ class FactureApp(ctk.CTk):
         self.tab_frames = {
             "Dashboard": self.dashboard_tab,
             "Clients": self.clients_tab,
+            "Temp Client": self.temp_clients_tab,
             "Services": self.services_tab,
             "List SF": self.list_sf_tab,
             "Factures": self.factures_tab,
@@ -183,6 +186,8 @@ class FactureApp(ctk.CTk):
         # no DB refresh here; the next time Clients is visited, refresh() loads the full list.
         if name != "Clients" and hasattr(self, "clients_tab"):
             self.clients_tab.search_var.set("")
+        if name != "Temp Client" and hasattr(self, "temp_clients_tab"):
+            self.temp_clients_tab.search_var.set("")
 
         self.current_tab = name
         for item_name, btn in self.nav_buttons.items():
@@ -213,6 +218,8 @@ class FactureApp(ctk.CTk):
                 self.editions_tab.refresh()
             elif name == "Clients":
                 self.clients_tab.refresh()
+            elif name == "Temp Client":
+                self.temp_clients_tab.refresh()
 
         self.after_idle(_do_refresh)
 

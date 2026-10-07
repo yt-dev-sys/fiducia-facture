@@ -436,7 +436,12 @@ def update_company_profile(data: dict):
 
 # ---------------- Clients ----------------
 
-def list_clients(search: str = ""):
+def list_clients(search: str = "", client_type: str = None, include_client_id: int = None):
+    """Lists visible clients (hidden temp clients are never returned).
+
+    client_type: None = normal + temp clients, 'normal' or 'temp' to filter by tab.
+    include_client_id: also return this client even if it is hidden (used when editing
+    an old invoice whose temp client was auto-hidden after being fully paid)."""
     conn = get_connection()
     query = """
         SELECT clients.*,
@@ -446,9 +451,18 @@ def list_clients(search: str = ""):
         LEFT JOIN client_service_prices ON client_service_prices.client_id = clients.id
     """
     params = []
+    if include_client_id is not None:
+        where = ["(clients.is_hidden = 0 OR clients.id = ?)"]
+        params.append(include_client_id)
+    else:
+        where = ["clients.is_hidden = 0"]
+    if client_type:
+        where.append("clients.client_type = ?")
+        params.append(client_type)
     if search:
-        query += " WHERE clients.name LIKE ? OR clients.ice LIKE ? OR clients.notes LIKE ?"
+        where.append("(clients.name LIKE ? OR clients.ice LIKE ? OR clients.notes LIKE ?)")
         params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+    query += " WHERE " + " AND ".join(where)
     query += " GROUP BY clients.id ORDER BY clients.name"
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -482,11 +496,13 @@ def _set_client_service_prices(conn, client_id, rows):
         )
 
 
-def create_client(name, address="", ice="", if_number="", phone="", email="", service_price_rows=None):
+def create_client(name, address="", ice="", if_number="", phone="", email="", service_price_rows=None,
+                  client_type="normal"):
+    assert client_type in ("normal", "temp")
     conn = get_connection()
     cur = conn.execute(
-        "INSERT INTO clients (name, address, ice, if_number, phone, email) VALUES (?, ?, ?, ?, ?, ?)",
-        (name, address, ice, if_number, phone, email)
+        "INSERT INTO clients (name, address, ice, if_number, phone, email, client_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (name, address, ice, if_number, phone, email, client_type)
     )
     new_id = cur.lastrowid
     _set_client_service_prices(conn, new_id, service_price_rows)
@@ -513,6 +529,31 @@ def get_client_service_price_sum(client_id):
     ).fetchone()[0]
     conn.close()
     return total
+
+
+def _sync_temp_client_visibility(conn, client_id):
+    """Auto-hide / un-hide a TEMP client (no commit - the caller commits).
+
+    A temp client is flagged hidden (is_hidden = 1) once it has at least one paid
+    invoice and no unpaid invoice left (drafts count as unpaid). If an unpaid invoice
+    appears again, it is shown again. Normal clients are never touched.
+    Nothing is deleted: the client and all its invoices stay in the database."""
+    if client_id is None:
+        return
+    row = conn.execute("SELECT client_type, is_hidden FROM clients WHERE id = ?", (client_id,)).fetchone()
+    if row is None or row["client_type"] != "temp":
+        return
+    paid = conn.execute(
+        "SELECT COUNT(*) FROM invoices WHERE client_id = ? AND status = 'paid'", (client_id,)
+    ).fetchone()[0]
+    unpaid = conn.execute(
+        "SELECT COUNT(*) FROM invoices WHERE client_id = ? AND status = 'unpaid'", (client_id,)
+    ).fetchone()[0]
+    should_hide = paid > 0 and unpaid == 0
+    if should_hide and not row["is_hidden"]:
+        conn.execute("UPDATE clients SET is_hidden = 1, hidden_at = date('now') WHERE id = ?", (client_id,))
+    elif not should_hide and row["is_hidden"]:
+        conn.execute("UPDATE clients SET is_hidden = 0, hidden_at = NULL WHERE id = ?", (client_id,))
 
 
 def delete_client(client_id):
@@ -643,6 +684,7 @@ def create_invoice(client_id, business_type, tva_rate, deadline="Immédiat", inv
         invoice_id = cur.lastrowid
         _set_invoice_items(conn, invoice_id, selected_items)
         _recompute_and_store_totals(conn, invoice_id)
+        _sync_temp_client_visibility(conn, client_id)
         conn.commit()
         return invoice_id
     except Exception:
@@ -766,6 +808,7 @@ def update_invoice(invoice_id, client_id, business_type, tva_rate, deadline, not
     if business_type != "company":
         tva_rate = 0.0
     conn = get_connection()
+    old = conn.execute("SELECT client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
     conn.execute("""
         UPDATE invoices SET client_id = ?, business_type = ?, tva_rate = ?, deadline = ?, notes = ?
         WHERE id = ?
@@ -773,6 +816,9 @@ def update_invoice(invoice_id, client_id, business_type, tva_rate, deadline, not
     if selected_items is not None:
         _set_invoice_items(conn, invoice_id, selected_items)
     _recompute_and_store_totals(conn, invoice_id)
+    _sync_temp_client_visibility(conn, client_id)
+    if old is not None and old["client_id"] != client_id:
+        _sync_temp_client_visibility(conn, old["client_id"])
     conn.commit()
     conn.close()
 
@@ -838,6 +884,9 @@ def set_invoice_status(invoice_id, status):
     assert status in ("paid", "unpaid")
     conn = get_connection()
     conn.execute("UPDATE invoices SET status = ? WHERE id = ?", (status, invoice_id))
+    row = conn.execute("SELECT client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    if row is not None:
+        _sync_temp_client_visibility(conn, row["client_id"])
     conn.commit()
     conn.close()
 
@@ -848,6 +897,9 @@ def set_invoice_paid(invoice_id, payment_type, payment_date):
         "UPDATE invoices SET status = 'paid', payment_type = ?, payment_date = ? WHERE id = ?",
         (payment_type, payment_date, invoice_id)
     )
+    row = conn.execute("SELECT client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    if row is not None:
+        _sync_temp_client_visibility(conn, row["client_id"])
     conn.commit()
     conn.close()
 
@@ -858,7 +910,7 @@ def delete_invoice(invoice_id):
     Also reduces service_stats cumulative totals for each checked item."""
     conn = get_connection()
     try:
-        row = conn.execute("SELECT numero, invoice_date FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        row = conn.execute("SELECT numero, invoice_date, client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
         # Collect items before deleting so we can subtract their totals from service_stats
         items = conn.execute(
             "SELECT service_id, line_total FROM invoice_items WHERE invoice_id = ?", (invoice_id,)
@@ -868,6 +920,8 @@ def delete_invoice(invoice_id):
         if row is not None and row["numero"] is not None:
             year = int(row["invoice_date"].split("-")[0])
             _resequence_year(conn, year)
+        if row is not None:
+            _sync_temp_client_visibility(conn, row["client_id"])
         conn.commit()
     except Exception:
         conn.rollback()
@@ -889,7 +943,7 @@ def unfinalize_invoice(invoice_id):
     Moves the invoice from Factures tab back to List SF tab."""
     conn = get_connection()
     try:
-        row = conn.execute("SELECT numero, invoice_date FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        row = conn.execute("SELECT numero, invoice_date, client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
         if row is None or row["numero"] is None:
             return
         year = int(row["invoice_date"].split("-")[0])
@@ -898,6 +952,7 @@ def unfinalize_invoice(invoice_id):
             (invoice_id,)
         )
         _resequence_year(conn, year)
+        _sync_temp_client_visibility(conn, row["client_id"])
         conn.commit()
     except Exception:
         conn.rollback()
@@ -971,7 +1026,7 @@ def list_unpaid_invoices_for_client(client_id):
 
 def count_clients():
     conn = get_connection()
-    count = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM clients WHERE is_hidden = 0").fetchone()[0]
     conn.close()
     return count
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 def _ensure_schema_table(conn: sqlite3.Connection) -> None:
@@ -104,6 +104,18 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(
                     "UPDATE invoices SET sequence_order = NULL WHERE numero IS NULL AND sequence_order IS NOT NULL"
                 )
+            elif next_version == 5:
+                # Temp clients: client_type is 'normal' or 'temp'. A temp client is
+                # flagged is_hidden = 1 (with hidden_at) automatically once all of its
+                # invoices are paid. Nothing is ever deleted - the flag only hides the
+                # client from the app, so it can be cleaned up later with one SQL query.
+                client_cols = [r["name"] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
+                if "client_type" not in client_cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN client_type TEXT NOT NULL DEFAULT 'normal'")
+                if "is_hidden" not in client_cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0")
+                if "hidden_at" not in client_cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN hidden_at TEXT DEFAULT NULL")
             else:
                 raise RuntimeError(f"Migration non implémentée : v{version} → v{next_version}")
             set_schema_version(conn, next_version)
