@@ -260,8 +260,9 @@ class ClientsTab(ctk.CTkFrame):
     def confirm_delete(self, client):
         def do_delete():
             try:
-                db.delete_client(client["id"])
+                db.hide_client(client["id"])
                 self.refresh()
             except ValueError as e:
                 MessageDialog(self, "Suppression impossible", str(e), is_error=True)
-        ConfirmDialog(self, f"Supprimer le client \"{client['name']}\" ?", do_delete)
+        ConfirmDialog(self, f"Supprimer le client \"{client['name']}\" ?\n\nIl sera masqué (recherche normale) mais "
+                          "reste retrouvable dans Paramètres > Recherche.", do_delete)

@@ -540,9 +540,13 @@ def _sync_temp_client_visibility(conn, client_id):
     Nothing is deleted: the client and all its invoices stay in the database."""
     if client_id is None:
         return
-    row = conn.execute("SELECT client_type, is_hidden FROM clients WHERE id = ?", (client_id,)).fetchone()
+    row = conn.execute(
+        "SELECT client_type, is_hidden, hidden_reason FROM clients WHERE id = ?", (client_id,)
+    ).fetchone()
     if row is None or row["client_type"] != "temp":
         return
+    if row["is_hidden"] and row["hidden_reason"] == "user":
+        return  # hidden by the user with "Suppr." - only "Restaurer" brings it back
     paid = conn.execute(
         "SELECT COUNT(*) FROM invoices WHERE client_id = ? AND status = 'paid'", (client_id,)
     ).fetchone()[0]
@@ -551,9 +555,70 @@ def _sync_temp_client_visibility(conn, client_id):
     ).fetchone()[0]
     should_hide = paid > 0 and unpaid == 0
     if should_hide and not row["is_hidden"]:
-        conn.execute("UPDATE clients SET is_hidden = 1, hidden_at = date('now') WHERE id = ?", (client_id,))
+        conn.execute(
+            "UPDATE clients SET is_hidden = 1, hidden_reason = 'auto', hidden_at = date('now') WHERE id = ?",
+            (client_id,))
     elif not should_hide and row["is_hidden"]:
-        conn.execute("UPDATE clients SET is_hidden = 0, hidden_at = NULL WHERE id = ?", (client_id,))
+        conn.execute(
+            "UPDATE clients SET is_hidden = 0, hidden_reason = NULL, hidden_at = NULL WHERE id = ?", (client_id,))
+
+
+def hide_client(client_id):
+    """'Suppr.' = hide, never a real delete. Only allowed when every invoice of the client
+    is paid (drafts and unpaid invoices block it). The client and its invoices stay in the database."""
+    conn = get_connection()
+    try:
+        unpaid = conn.execute(
+            "SELECT COUNT(*) FROM invoices WHERE client_id = ? AND status = 'unpaid'", (client_id,)
+        ).fetchone()[0]
+        if unpaid > 0:
+            raise ValueError(
+                f"Impossible de supprimer ce client : {unpaid} facture(s) non payée(s) ou en brouillon. "
+                "Toutes les factures doivent être payées."
+            )
+        conn.execute(
+            "UPDATE clients SET is_hidden = 1, hidden_reason = 'user', hidden_at = date('now') WHERE id = ?",
+            (client_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def restore_client(client_id):
+    """Makes a hidden client (user-hidden or auto-hidden) visible again."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE clients SET is_hidden = 0, hidden_reason = NULL, hidden_at = NULL WHERE id = ?", (client_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def search_all_clients(search: str = ""):
+    """Search utility: ALL clients, visible and hidden (is_hidden / hidden_reason tell which)."""
+    conn = get_connection()
+    query = "SELECT id, name, ice, client_type, is_hidden, hidden_reason, hidden_at FROM clients"
+    params = []
+    if search:
+        query += " WHERE name LIKE ? OR ice LIKE ? OR notes LIKE ?"
+        params = [f"%{search}%"] * 3
+    query += " ORDER BY name"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return rows
+
+
+def list_client_invoices(client_id):
+    """Every invoice this client ever had (drafts included), newest first."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT id, numero, invoice_date, status, payment_date, payment_type, total_ttc
+           FROM invoices WHERE client_id = ? ORDER BY invoice_date DESC, id DESC""",
+        (client_id,)
+    ).fetchall()
+    conn.close()
+    return rows
 
 
 def delete_client(client_id):

@@ -44,6 +44,15 @@ class AppSettingsDialog(ctk.CTkToplevel):
             side="left", padx=(0, 8))
         primary_button(telegram_btn_frame, "Sauvegarder maintenant", self.backup_now, width=190).pack(side="left")
 
+        # ---------- Client search utility ----------
+        divider = ctk.CTkFrame(scroll, fg_color=COLORS["border"], height=1)
+        divider.pack(fill="x", pady=(16, 16))
+        section_title(scroll, "Recherche").pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(scroll, text="Retrouver tous les clients, y compris ceux supprimés ou masqués automatiquement.",
+                     font=body_font(12), text_color=COLORS["text_muted"], justify="left",
+                     wraplength=380).pack(anchor="w", pady=(0, 10))
+        secondary_button(scroll, "Ouvrir la recherche", self.open_client_search, width=220).pack(anchor="w", pady=(0, 6))
+
         # ---------- Application updates ----------
         divider = ctk.CTkFrame(scroll, fg_color=COLORS["border"], height=1)
         divider.pack(fill="x", pady=(16, 16))
@@ -55,6 +64,10 @@ class AppSettingsDialog(ctk.CTkToplevel):
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=16)
         secondary_button(btn_frame, "Fermer", self.destroy, width=140).pack(side="left", padx=8)
+
+    def open_client_search(self):
+        from app.tabs.client_search_dialog import ClientSearchDialog
+        ClientSearchDialog(self)
 
     def _refresh_telegram_status(self):
         if telegram_backup.is_connected():

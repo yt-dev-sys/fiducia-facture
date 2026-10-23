@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 def _ensure_schema_table(conn: sqlite3.Connection) -> None:
@@ -116,6 +116,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                     conn.execute("ALTER TABLE clients ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0")
                 if "hidden_at" not in client_cols:
                     conn.execute("ALTER TABLE clients ADD COLUMN hidden_at TEXT DEFAULT NULL")
+            elif next_version == 6:
+                # hidden_reason: 'user' (hidden with "Suppr.") or 'auto' (temp client fully paid).
+                client_cols = [r["name"] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
+                if "hidden_reason" not in client_cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN hidden_reason TEXT DEFAULT NULL")
+                conn.execute("UPDATE clients SET hidden_reason = 'auto' WHERE is_hidden = 1 AND hidden_reason IS NULL")
             else:
                 raise RuntimeError(f"Migration non implémentée : v{version} → v{next_version}")
             set_schema_version(conn, next_version)
