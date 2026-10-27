@@ -11,6 +11,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 from app import database as db
+from app.signature import draw_signature
 from app.format_utils import (
     format_price_dh, format_date_fr, compute_echeance_date, amount_to_french_words_dh,
 )
@@ -262,6 +263,9 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
     tp_if_cnss = f"TP: {profile.get('patente') or '-'}    IF: {profile.get('if_number') or '-'}    CNSS: {profile.get('cnss') or '-'}"
     c.drawCentredString(center_x, line2, tp_if_cnss)
     c.drawRightString(col3_x, line2, profile.get("email") or "")
+
+    # ---------- Signature: bottom right, just above the footer line ----------
+    draw_signature(c, PAGE_W - MARGIN, footer_y + 3 * mm, 24 * mm)
 
     c.showPage()
     c.save()

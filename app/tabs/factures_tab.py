@@ -19,6 +19,9 @@ DEADLINE_OPTIONS = ["Immédiat", "30j", "60j", "90j", "120j"]
 class InvoiceFormDialog(ctk.CTkToplevel):
     def __init__(self, master, on_saved, invoice=None):
         super().__init__(master)
+        if invoice and invoice.get("numero"):
+            self.after(0, self.destroy)  # finalized factures are locked
+            return
         self.invoice = invoice
         self.title("Modifier la facture" if invoice else "Nouvelle facture")
         self.geometry("640x680")
@@ -268,8 +271,10 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=(0, 16))
-        secondary_button(btn_frame, "Modifier", self.open_edit, width=100).pack(side="left", padx=6)
-        if not is_draft:
+        if is_draft:
+            secondary_button(btn_frame, "Modifier", self.open_edit, width=100).pack(side="left", padx=6)
+        else:
+            # Finalized factures are read-only: view and print only.
             primary_button(btn_frame, "Print", self.print_pdf, width=100).pack(side="left", padx=6)
 
     def open_edit(self):
