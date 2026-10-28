@@ -873,7 +873,12 @@ def update_invoice(invoice_id, client_id, business_type, tva_rate, deadline, not
     if business_type != "company":
         tva_rate = 0.0
     conn = get_connection()
-    old = conn.execute("SELECT client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    old = conn.execute("SELECT client_id, numero FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    # A finalized (numbered) facture is locked: it can only be viewed and printed.
+    # To change it, it must first be moved back to List SF with "Défacturer".
+    if old is not None and old["numero"] is not None:
+        conn.close()
+        raise ValueError("Cette facture est verrouillée (déjà facturée). Défacturez-la pour la modifier.")
     conn.execute("""
         UPDATE invoices SET client_id = ?, business_type = ?, tva_rate = ?, deadline = ?, notes = ?
         WHERE id = ?

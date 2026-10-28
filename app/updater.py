@@ -26,6 +26,14 @@ CHECK_INTERVAL_HOURS = 24
 USER_AGENT = "FiduciaFacture-Updater/1.0"
 
 
+class UpdateError(Exception):
+    """An update problem whose message is safe to show to the user."""
+
+
+# Filled by fetch_latest_release() so the UI can say what GitHub reported.
+LAST_SEEN = {"tag": None}
+
+
 @dataclass(frozen=True)
 class ReleaseInfo:
     version: str
@@ -55,8 +63,19 @@ def is_newer(version: str) -> bool:
 
 def _request_json(url: str):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=8) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise UpdateError("Aucune version publiée n'a été trouvée sur GitHub "
+                              "(dépôt privé ou aucune release).") from exc
+        if exc.code in (403, 429):
+            raise UpdateError("GitHub limite temporairement les vérifications. "
+                              "Réessayez dans une heure.") from exc
+        raise UpdateError(f"GitHub a répondu avec une erreur ({exc.code}).") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise UpdateError("Impossible de joindre GitHub. Vérifiez votre connexion Internet.") from exc
 
 
 def _read_text(url: str) -> str:
@@ -72,6 +91,7 @@ def fetch_latest_release() -> Optional[ReleaseInfo]:
     if data.get("draft") or data.get("prerelease"):
         return None
     tag = data.get("tag_name", "")
+    LAST_SEEN["tag"] = tag
     version = tag.lstrip("vV")
     if not is_newer(version):
         return None
@@ -79,7 +99,7 @@ def fetch_latest_release() -> Optional[ReleaseInfo]:
     assets = data.get("assets") or []
     installer = next((a for a in assets if str(a.get("name", "")).lower().endswith(".exe")), None)
     if not installer:
-        return None
+        raise UpdateError(f"La version {tag} est publiée mais sans programme d'installation (.exe).")
     checksum = next((a for a in assets if str(a.get("name", "")).lower().endswith(".sha256")), None)
     return ReleaseInfo(
         version=version,
@@ -171,8 +191,8 @@ def check_in_background(on_available: Callable[[ReleaseInfo], None], on_error: O
     try:
         if not force and not _auto_check_allowed():
             return
-        _mark_checked()
         release = fetch_latest_release()
+        _mark_checked()
         if release:
             on_available(release)
     except Exception as exc:

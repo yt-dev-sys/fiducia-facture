@@ -10,6 +10,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 from app import database as db
+from app.signature import draw_signature
 from app.format_utils import format_price_dh, format_date_fr
 
 PAGE_W = 190 * mm
@@ -102,6 +103,9 @@ def generate_receipt_pdf(invoice_id: int, payment_date: str, output_path: str, r
     y -= 10 * mm
     c.setLineWidth(0.8)
     c.line(margin + 4 * mm, y, PAGE_W - margin - 4 * mm, y)
+
+    # ---------- Signature: bottom right, drawn last so it sits over the lines like real ink ----------
+    draw_signature(c, right_edge, margin + 1.5 * mm, 21 * mm)
 
     c.showPage()
     c.save()

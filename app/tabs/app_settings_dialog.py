@@ -117,10 +117,18 @@ class AppSettingsDialog(ctk.CTkToplevel):
             try:
                 release = updater.fetch_latest_release()
                 if not release:
-                    self.after(0, lambda: MessageDialog(self, "Mise à jour", "Vous utilisez déjà la dernière version disponible."))
+                    seen = updater.LAST_SEEN.get("tag")
+                    extra = f"\nDernière version publiée : {seen}" if seen else ""
+                    msg = f"Vous utilisez déjà la dernière version ({APP_VERSION}).{extra}"
+                    self.after(0, lambda: MessageDialog(self, "Mise à jour", msg))
                     return
                 self.after(0, lambda r=release: self._offer_update(r))
+            except updater.UpdateError as e:
+                log_exception("Vérification des mises à jour", e)
+                msg = str(e)
+                self.after(0, lambda: MessageDialog(self, "Mise à jour", msg, is_error=True))
             except Exception as e:
+                log_exception("Vérification des mises à jour", e)
                 self.after(0, lambda: MessageDialog(self, "Mise à jour", "Impossible de vérifier les mises à jour pour le moment.", is_error=True))
         threading.Thread(target=worker, daemon=True).start()
 
