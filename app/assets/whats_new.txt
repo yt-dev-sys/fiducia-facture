@@ -1,0 +1,9 @@
+# Edit this file before each release - its text appears ONCE, in a window, the first
+# time a client opens the new version. Lines starting with # are ignored.
+# Line 1 = window title. Everything after it = the message (write whatever you want).
+
+Nouveautés de cette version
+
+• Signature ajoutée automatiquement en bas à droite des factures et des reçus.
+• Une facture déjà facturée est maintenant verrouillée : consultation et impression uniquement.
+• Les services se choisissent désormais directement dans la nouvelle facture, avec quantité (Q), prix unitaire (P.U) et total (TTC) calculé automatiquement.

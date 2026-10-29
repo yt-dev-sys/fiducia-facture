@@ -14,6 +14,8 @@ from app.tabs.app_settings_dialog import AppSettingsDialog
 from app.widgets import ConfirmDialog, MessageDialog
 from app import updater
 from app import telegram_backup
+from app import whats_new
+from app.tabs.whats_new_dialog import WhatsNewDialog
 from app.app_logger import log_exception, log_info
 
 NAV_ITEMS = [
@@ -52,6 +54,7 @@ class FactureApp(ctk.CTk):
         self._build_content(root)
         self.select_tab("Dashboard")
         self._setup_text_selection()
+        self.after(600, self._show_whats_new_once)
         self.after(1200, self._check_updates_automatically)
         self.after(1500, self._start_daily_telegram_backup)
 
@@ -242,6 +245,16 @@ class FactureApp(ctk.CTk):
             except Exception as exc:
                 log_exception("Initialisation/sauvegarde Telegram quotidienne", exc)
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_whats_new_once(self):
+        """After a new version is installed/opened for the first time, show the notes once."""
+        try:
+            notes = whats_new.pending_notes()
+            whats_new.mark_seen()  # recorded right away so it can never appear twice
+            if notes and self.winfo_exists():
+                WhatsNewDialog(self, *notes)
+        except Exception as exc:
+            log_exception("Fenêtre des nouveautés", exc)
 
     def _check_updates_automatically(self):
         def worker():

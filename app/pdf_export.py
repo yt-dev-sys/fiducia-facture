@@ -9,8 +9,10 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 from app import database as db
+from app.signature import draw_signature
 from app.format_utils import (
     format_price_dh, format_date_fr, compute_echeance_date, amount_to_french_words_dh,
 )
@@ -25,6 +27,26 @@ WHITE = (1, 1, 1)
 
 PAGE_W, PAGE_H = A4
 MARGIN = 20 * mm
+
+# Gap between the last line of text (Échéance) and the top of the signature: 50 px
+# (CSS pixels, 96 dpi) = 37.5 pt. Change this one number to move the signature.
+SIGNATURE_GAP = 50 * 0.75
+SIGNATURE_HEIGHT = 24 * mm
+SIGNATURE_MIN_HEIGHT = 14 * mm
+
+
+def _fit_text(text, font, size, max_width):
+    """Shortens text with an ellipsis so it fits max_width."""
+    text = str(text)
+    if stringWidth(text, font, size) <= max_width:
+        return text
+    while text and stringWidth(text + "…", font, size) > max_width:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+def _fmt_qty(value):
+    return f"{float(value):g}"
 
 
 def _set_color(c, rgb):
@@ -122,12 +144,15 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
     # ---------- Items table (paginates if there are enough line items) ----------
     col_desc_x = MARGIN
     table_w = PAGE_W - 2 * MARGIN
-    col1_w = table_w * 0.484   # Désignation
+    col1_w = table_w * 0.384   # Désignation
+    colq_w = table_w * 0.100   # Q (quantité)
     col2_w = table_w * 0.277   # P.U TTC
     col3_w = table_w * 0.239   # Total TTC
     col_divider_1 = MARGIN + col1_w
-    col_divider_2 = col_divider_1 + col2_w
-    col_pu_x = col_divider_1 + col2_w / 2
+    col_divider_q = col_divider_1 + colq_w
+    col_divider_2 = col_divider_q + col2_w
+    col_qty_x = col_divider_1 + colq_w / 2
+    col_pu_x = col_divider_q + col2_w / 2
     col_total_x = PAGE_W - MARGIN - 5 * mm
     row_h = 8 * mm
     header_h = 8 * mm
@@ -144,6 +169,7 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
         _set_color(c, WHITE)
         c.setFont("Helvetica-Bold", 9.5)
         c.drawString(col_desc_x + 3 * mm, top_y - header_h + 2.8 * mm, "Désignation")
+        c.drawCentredString(col_qty_x, top_y - header_h + 2.8 * mm, "Qté")
         c.drawCentredString(col_pu_x, top_y - header_h + 2.8 * mm, "P.U TTC")
         c.drawRightString(col_total_x, top_y - header_h + 2.8 * mm, "Total TTC")
 
@@ -155,6 +181,7 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
             c.line(MARGIN, ry, PAGE_W - MARGIN, ry)
             ry -= row_h
         c.line(col_divider_1, top_y, col_divider_1, bottom_y)
+        c.line(col_divider_q, top_y, col_divider_q, bottom_y)
         c.line(col_divider_2, top_y, col_divider_2, bottom_y)
         c.setLineWidth(0.6)
         c.rect(MARGIN, bottom_y, PAGE_W - 2 * MARGIN, top_y - bottom_y, fill=0, stroke=1)
@@ -179,9 +206,14 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
         c.rect(MARGIN, row_y - row_h, PAGE_W - 2 * MARGIN, row_h, fill=1, stroke=0)
         _set_color(c, BLACK)
         c.setFont("Helvetica", 9.5)
-        c.drawString(col_desc_x + 3 * mm, row_y - row_h + 2.8 * mm, str(row["description"])[:70])
-        c.drawCentredString(col_pu_x, row_y - row_h + 2.8 * mm, f"{row['price']:.2f}")
-        c.drawRightString(col_total_x, row_y - row_h + 2.8 * mm, f"{row['price']:.2f}")
+        line_total = row["price"]
+        qty = row.get("quantity") or 1
+        unit_price = row["unit_price"] if row.get("unit_price") is not None else line_total
+        c.drawString(col_desc_x + 3 * mm, row_y - row_h + 2.8 * mm,
+                     _fit_text(row["description"], "Helvetica", 9.5, col1_w - 6 * mm))
+        c.drawCentredString(col_qty_x, row_y - row_h + 2.8 * mm, _fmt_qty(qty))
+        c.drawCentredString(col_pu_x, row_y - row_h + 2.8 * mm, f"{unit_price:.2f}")
+        c.drawRightString(col_total_x, row_y - row_h + 2.8 * mm, f"{line_total:.2f}")
         row_y -= row_h
 
     table_bottom = row_y
@@ -237,6 +269,7 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
     _set_color(c, BLACK)
     c.setFont("Helvetica", 9.5)
     c.drawString(MARGIN, y, f"Échéance : {format_date_fr(echeance_iso)}")
+    last_text_y = y
 
     y -= 10 * mm
 
@@ -262,6 +295,18 @@ def generate_invoice_pdf(invoice_id: int, output_path: str):
     tp_if_cnss = f"TP: {profile.get('patente') or '-'}    IF: {profile.get('if_number') or '-'}    CNSS: {profile.get('cnss') or '-'}"
     c.drawCentredString(center_x, line2, tp_if_cnss)
     c.drawRightString(col3_x, line2, profile.get("email") or "")
+
+    # ---------- Signature: bottom right, SIGNATURE_GAP below the last line of text ----------
+    # If the page is too full for the full gap + size, it shrinks / moves up just enough
+    # to stay clear of the footer line.
+    floor_y = footer_y + 2 * mm
+    sig_top = last_text_y - SIGNATURE_GAP
+    sig_height = SIGNATURE_HEIGHT
+    if sig_top - sig_height < floor_y:
+        sig_height = max(SIGNATURE_MIN_HEIGHT, sig_top - floor_y)
+        if sig_top - sig_height < floor_y:
+            sig_top = floor_y + sig_height
+    draw_signature(c, PAGE_W - MARGIN, sig_top - sig_height, sig_height)
 
     c.showPage()
     c.save()
