@@ -26,6 +26,14 @@ CHECK_INTERVAL_HOURS = 24
 USER_AGENT = "FiduciaFacture-Updater/1.0"
 
 
+class UpdateError(Exception):
+    """An update problem whose message is safe to show to the user."""
+
+
+# Filled by fetch_latest_release() so the UI can say what GitHub reported.
+LAST_SEEN = {"tag": None}
+
+
 @dataclass(frozen=True)
 class ReleaseInfo:
     version: str
@@ -55,8 +63,19 @@ def is_newer(version: str) -> bool:
 
 def _request_json(url: str):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=8) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise UpdateError("Aucune version publiée n'a été trouvée sur GitHub "
+                              "(dépôt privé ou aucune release).") from exc
+        if exc.code in (403, 429):
+            raise UpdateError("GitHub limite temporairement les vérifications. "
+                              "Réessayez dans une heure.") from exc
+        raise UpdateError(f"GitHub a répondu avec une erreur ({exc.code}).") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise UpdateError("Impossible de joindre GitHub. Vérifiez votre connexion Internet.") from exc
 
 
 def _read_text(url: str) -> str:
@@ -72,6 +91,7 @@ def fetch_latest_release() -> Optional[ReleaseInfo]:
     if data.get("draft") or data.get("prerelease"):
         return None
     tag = data.get("tag_name", "")
+    LAST_SEEN["tag"] = tag
     version = tag.lstrip("vV")
     if not is_newer(version):
         return None
@@ -79,7 +99,7 @@ def fetch_latest_release() -> Optional[ReleaseInfo]:
     assets = data.get("assets") or []
     installer = next((a for a in assets if str(a.get("name", "")).lower().endswith(".exe")), None)
     if not installer:
-        return None
+        raise UpdateError(f"La version {tag} est publiée mais sans programme d'installation (.exe).")
     checksum = next((a for a in assets if str(a.get("name", "")).lower().endswith(".sha256")), None)
     return ReleaseInfo(
         version=version,
@@ -92,14 +112,25 @@ def fetch_latest_release() -> Optional[ReleaseInfo]:
     )
 
 
-def _download(url: str, destination: Path) -> None:
+def _download(url: str, destination: Path, on_progress: Optional[Callable[[int, Optional[int]], None]] = None) -> None:
+    """Downloads url to destination. on_progress(bytes_done, total_bytes_or_None) is called per chunk."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=60) as response, open(destination, "wb") as out:
+        try:
+            total = int(response.headers.get("Content-Length") or 0) or None
+        except ValueError:
+            total = None
+        done = 0
+        if on_progress:
+            on_progress(0, total)
         while True:
             chunk = response.read(1024 * 256)
             if not chunk:
                 break
             out.write(chunk)
+            done += len(chunk)
+            if on_progress:
+                on_progress(done, total)
 
 
 def _verify_sha256(installer: Path, checksum_url: str) -> bool:
@@ -115,7 +146,7 @@ def _verify_sha256(installer: Path, checksum_url: str) -> bool:
     return digest.hexdigest().lower() == expected
 
 
-def download_and_verify(release: ReleaseInfo) -> Path:
+def download_and_verify(release: ReleaseInfo, on_progress=None, on_status=None) -> Path:
     update_dir = get_update_dir()
     for old in update_dir.glob("FiduciaFacture-Setup-*"):
         try:
@@ -123,7 +154,9 @@ def download_and_verify(release: ReleaseInfo) -> Path:
         except OSError:
             pass
     installer = update_dir / release.installer_name
-    _download(release.installer_url, installer)
+    if on_status:
+        on_status("Téléchargement de la mise à jour…")
+    _download(release.installer_url, installer, on_progress)
     if not release.checksum_url:
         # Never install an unverified binary. Publishing releases should always
         # include a .sha256 file; if one is missing, refuse the auto-update
@@ -133,6 +166,8 @@ def download_and_verify(release: ReleaseInfo) -> Path:
             "La mise à jour n'a pas de fichier de vérification SHA-256 publié. "
             "Installation automatique annulée par sécurité."
         )
+    if on_status:
+        on_status("Vérification de l'intégrité du fichier…")
     if not _verify_sha256(installer, release.checksum_url):
         installer.unlink(missing_ok=True)
         raise RuntimeError("La vérification SHA-256 du programme téléchargé a échoué.")
@@ -145,8 +180,8 @@ def launch_installer(installer: Path) -> None:
     subprocess.Popen([str(installer), "/CLOSEAPPLICATIONS"], close_fds=True)
 
 
-def prepare_update(release: ReleaseInfo) -> Path:
-    installer = download_and_verify(release)
+def prepare_update(release: ReleaseInfo, on_progress=None, on_status=None) -> Path:
+    installer = download_and_verify(release, on_progress, on_status)
     log_info(f"Mise à jour {release.version} téléchargée et vérifiée.")
     return installer
 
@@ -171,8 +206,8 @@ def check_in_background(on_available: Callable[[ReleaseInfo], None], on_error: O
     try:
         if not force and not _auto_check_allowed():
             return
-        _mark_checked()
         release = fetch_latest_release()
+        _mark_checked()
         if release:
             on_available(release)
     except Exception as exc:

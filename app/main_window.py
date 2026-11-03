@@ -14,6 +14,9 @@ from app.tabs.app_settings_dialog import AppSettingsDialog
 from app.widgets import ConfirmDialog, MessageDialog
 from app import updater
 from app import telegram_backup
+from app import whats_new
+from app.tabs.whats_new_dialog import WhatsNewDialog
+from app.tabs.update_progress_dialog import UpdateProgressDialog
 from app.app_logger import log_exception, log_info
 
 NAV_ITEMS = [
@@ -52,6 +55,7 @@ class FactureApp(ctk.CTk):
         self._build_content(root)
         self.select_tab("Dashboard")
         self._setup_text_selection()
+        self.after(600, self._show_whats_new_once)
         self.after(1200, self._check_updates_automatically)
         self.after(1500, self._start_daily_telegram_backup)
 
@@ -243,6 +247,16 @@ class FactureApp(ctk.CTk):
                 log_exception("Initialisation/sauvegarde Telegram quotidienne", exc)
         threading.Thread(target=worker, daemon=True).start()
 
+    def _show_whats_new_once(self):
+        """After a new version is installed/opened for the first time, show the notes once."""
+        try:
+            notes = whats_new.pending_notes()
+            whats_new.mark_seen()  # recorded right away so it can never appear twice
+            if notes and self.winfo_exists():
+                WhatsNewDialog(self, *notes)
+        except Exception as exc:
+            log_exception("Fenêtre des nouveautés", exc)
+
     def _check_updates_automatically(self):
         def worker():
             try:
@@ -263,20 +277,17 @@ class FactureApp(ctk.CTk):
         )
 
     def _download_and_install_update(self, release):
-        def worker():
+        def start_installer(installer):
+            log_info(f"Lancement de l'installateur {release.version}.")
             try:
-                installer = updater.prepare_update(release)
-                log_info(f"Lancement de l'installateur {release.version}.")
                 updater.launch_installer(installer)
                 self.after(500, self.destroy)
             except Exception as exc:
-                log_exception("Installation de la mise à jour", exc)
-                self.after(0, lambda: MessageDialog(
-                    self, "Mise à jour",
-                    "La mise à jour n'a pas pu être préparée. Votre version actuelle reste intacte.",
-                    is_error=True,
-                ))
-        threading.Thread(target=worker, daemon=True).start()
+                log_exception("Lancement de l'installateur", exc)
+                MessageDialog(self, "Mise à jour",
+                              "L'installation n'a pas pu démarrer. Votre version actuelle reste intacte.",
+                              is_error=True)
+        UpdateProgressDialog(self, release, start_installer)
 
     def open_settings(self):
         SettingsDialog(self, on_saved=self._on_settings_saved)

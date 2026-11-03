@@ -1,0 +1,8 @@
+# Edit this file before each release - its text appears ONCE, in a window, the first
+# time a client opens the new version. Lines starting with # are ignored.
+# Line 1 = window title. Everything after it = the message (write whatever you want).
+
+Nouveautés de la version 2.0.6
+
+• Signature plus grande sur les factures : elle est maintenant 50 % plus grande, placée en bas à droite, sous le texte de la facture.
+• Mise à jour avec barre de progression : une fenêtre affiche l'avancement du téléchargement, puis de la vérification, lorsque vous installez une nouvelle version.

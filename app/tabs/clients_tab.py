@@ -2,61 +2,7 @@ import customtkinter as ctk
 from app import database as db
 from app.theme import COLORS, body_font
 from app.widgets import section_title, primary_button, secondary_button, danger_button, ConfirmDialog, MessageDialog, labeled_entry, bind_digits_only, avatar_badge, bind_search_debounce
-from app.format_utils import format_price_dh, parse_price
 from app.app_logger import log_exception
-
-
-class ServicePriceRow(ctk.CTkFrame):
-    """One row: pick one of your existing services (from the Services tab) + its price for this client."""
-
-    def __init__(self, master, services, on_remove, existing=None):
-        super().__init__(master, fg_color=COLORS["bg_soft"], corner_radius=12)
-        self.services = services
-        self.on_remove = on_remove
-
-        self.grid_columnconfigure(0, weight=3)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_columnconfigure(2, weight=0)
-        self.grid_columnconfigure(3, weight=0)
-
-        service_names = [s["name"] for s in services]
-        existing_service = None
-        if existing and existing.get("service_id"):
-            existing_service = next((s for s in services if s["id"] == existing["service_id"]), None)
-
-        default_name = existing_service["name"] if existing_service else (service_names[0] if service_names else "")
-        self.service_var = ctk.StringVar(value=default_name)
-        self.service_menu = ctk.CTkOptionMenu(
-            self, values=service_names, variable=self.service_var,
-            fg_color=COLORS["white"], button_color=COLORS["baby_blue_deep"],
-            button_hover_color=COLORS["baby_blue_dark"], text_color=COLORS["text"],
-            dropdown_fg_color=COLORS["white"]
-        )
-        self.service_menu.grid(row=0, column=0, padx=6, pady=8, sticky="ew")
-
-        self.price_var = ctk.StringVar(value=str(existing["price"]) if existing else "")
-        price_entry = ctk.CTkEntry(self, textvariable=self.price_var, width=100, placeholder_text="Prix",
-                                    fg_color=COLORS["white"], border_color=COLORS["border"])
-        price_entry.grid(row=0, column=1, padx=(6, 0), pady=8)
-
-        ctk.CTkLabel(self, text="DH", font=body_font(12, "bold"),
-                     text_color=COLORS["text_muted"]).grid(row=0, column=2, padx=(4, 6), pady=8)
-
-        remove_btn = ctk.CTkButton(self, text="✕", width=28, height=28, fg_color="transparent",
-                                    text_color=COLORS["danger"], hover_color="#FDEAEA",
-                                    command=lambda: self.on_remove(self))
-        remove_btn.grid(row=0, column=3, padx=6, pady=8)
-
-    def get_data(self):
-        choice = self.service_var.get()
-        svc = next((s for s in self.services if s["name"] == choice), None)
-        if not svc:
-            return None
-        try:
-            price = parse_price(self.price_var.get())
-        except ValueError:
-            price = 0.0
-        return {"service_id": svc["id"], "description": svc["name"], "price": price}
 
 
 class ClientFormDialog(ctk.CTkToplevel):
@@ -64,16 +10,13 @@ class ClientFormDialog(ctk.CTkToplevel):
         super().__init__(master)
         self.client_type = client_type
         self.title("Modifier client" if client else ("Nouveau client temporaire" if client_type == "temp" else "Nouveau client"))
-        self.geometry("460x700")
+        self.geometry("460x520")
         self.configure(fg_color=COLORS["white"])
         self.resizable(False, False)
         self.grab_set()
 
         self.on_saved = on_saved
         self.client = client
-        self.services = db.list_services()
-        self.service_price_rows = []
-        existing_rows = db.get_client_service_prices(client["id"]) if client else []
 
         self.name_var = ctk.StringVar(value=client["name"] if client else "")
         self.ice_var = ctk.StringVar(value=client["ice"] if client else "")
@@ -94,41 +37,12 @@ class ClientFormDialog(ctk.CTkToplevel):
         labeled_entry(scroll, "Téléphone", self.phone_var)[0].pack(fill="x", **pad)
         labeled_entry(scroll, "Email", self.email_var)[0].pack(fill="x", **pad)
 
-        ctk.CTkLabel(scroll, text="Services", font=body_font(12, "bold"),
-                     text_color=COLORS["text_muted"], anchor="w").pack(anchor="w", padx=20, pady=(14, 4))
-        self.rows_container = ctk.CTkFrame(scroll, fg_color="transparent")
-        self.rows_container.pack(fill="x", padx=20)
-
-        if self.services:
-            self.add_service_button = secondary_button(scroll, "+ Ajouter un service", self.add_service_row, width=190)
-            self.add_service_button.pack(anchor="w", padx=20, pady=(8, 14))
-
-            if existing_rows:
-                for row in existing_rows:
-                    self.add_service_row(existing=row)
-            else:
-                self.add_service_row()
-        else:
-            ctk.CTkLabel(
-                scroll, text="Aucun service disponible. Ajoutez-en dans l'onglet Services.",
-                font=body_font(12), text_color=COLORS["text_muted"]
-            ).pack(anchor="w", padx=20, pady=(0, 14))
+        ctk.CTkFrame(scroll, fg_color="transparent", height=8).pack()
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=16)
         secondary_button(btn_frame, "Annuler", self.destroy, width=120).pack(side="left", padx=8)
         primary_button(btn_frame, "Enregistrer", self.save, width=140).pack(side="left", padx=8)
-
-    def add_service_row(self, existing=None):
-        row = ServicePriceRow(self.rows_container, self.services, self.remove_service_row, existing=existing)
-        row.pack(fill="x", pady=4)
-        self.service_price_rows.append(row)
-
-    def remove_service_row(self, row):
-        if len(self.service_price_rows) <= 1:
-            return
-        row.destroy()
-        self.service_price_rows.remove(row)
 
     def save(self):
         name = self.name_var.get().strip()
@@ -136,26 +50,19 @@ class ClientFormDialog(ctk.CTkToplevel):
             MessageDialog(self, "Erreur", "Le nom du client est obligatoire.", is_error=True)
             return
 
-        service_price_rows = []
-        for row in self.service_price_rows:
-            data = row.get_data()
-            if data:
-                service_price_rows.append(data)
-
         try:
             if self.client:
                 db.update_client(
                     self.client["id"], name,
                     address=self.address_var.get(), ice=self.ice_var.get(), if_number=self.if_var.get(),
-                    phone=self.phone_var.get(), email=self.email_var.get(),
-                    service_price_rows=service_price_rows
+                    phone=self.phone_var.get(), email=self.email_var.get()
                 )
             else:
                 db.create_client(
                     name,
                     address=self.address_var.get(), ice=self.ice_var.get(), if_number=self.if_var.get(),
                     phone=self.phone_var.get(), email=self.email_var.get(),
-                    service_price_rows=service_price_rows, client_type=self.client_type
+                    client_type=self.client_type
                 )
             self.destroy()
             self.on_saved()
@@ -193,14 +100,12 @@ class ClientsTab(ctk.CTkFrame):
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color=COLORS["white"])
         self.list_frame.pack(fill="both", expand=True, padx=24, pady=(0, 20))
-        self.list_frame.grid_columnconfigure(0, weight=2)  # Nom
-        self.list_frame.grid_columnconfigure(1, weight=2)  # ICE
-        self.list_frame.grid_columnconfigure(2, weight=3)  # Adresse
-        self.list_frame.grid_columnconfigure(3, weight=3)  # Service
-        self.list_frame.grid_columnconfigure(4, weight=2)  # Prix
-        self.list_frame.grid_columnconfigure(5, weight=2)  # actions
+        self.list_frame.grid_columnconfigure(0, weight=3)  # Nom
+        self.list_frame.grid_columnconfigure(1, weight=3)  # ICE
+        self.list_frame.grid_columnconfigure(2, weight=4)  # Adresse
+        self.list_frame.grid_columnconfigure(3, weight=2)  # actions
 
-        headers = ["Nom", "ICE", "Adresse", "Service", "Montant", ""]
+        headers = ["Nom", "ICE", "Adresse", ""]
         for i, h in enumerate(headers):
             ctk.CTkLabel(self.list_frame, text=h, font=body_font(12, "bold"),
                          text_color=COLORS["text_muted"], anchor="w").grid(row=0, column=i, sticky="w", padx=8, pady=(0, 10))
@@ -217,18 +122,14 @@ class ClientsTab(ctk.CTkFrame):
                      text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=1, sticky="w", padx=8, pady=6)
         ctk.CTkLabel(self.list_frame, text=c["address"] or "-", font=body_font(12),
                      text_color=COLORS["text_muted"], anchor="w").grid(row=row, column=2, sticky="w", padx=8, pady=6)
-        ctk.CTkLabel(self.list_frame, text=c.get("service_names") or "-", font=body_font(12),
-                     text_color=COLORS["text_muted"], anchor="w", wraplength=200, justify="left").grid(row=row, column=3, sticky="w", padx=8, pady=6)
-        ctk.CTkLabel(self.list_frame, text=format_price_dh(c.get("total_price", 0)), font=body_font(12, "bold"),
-                     text_color=COLORS["text"], anchor="w").grid(row=row, column=4, sticky="w", padx=8, pady=6)
 
         actions = ctk.CTkFrame(self.list_frame, fg_color="transparent")
-        actions.grid(row=row, column=5, sticky="e", padx=8, pady=4)
+        actions.grid(row=row, column=3, sticky="e", padx=8, pady=4)
         secondary_button(actions, "Modifier", lambda c=c: self.open_edit_dialog(c), width=90).pack(side="left", padx=4)
         danger_button(actions, "Suppr.", lambda c=c: self.confirm_delete(c), width=70).pack(side="left", padx=4)
 
     def refresh(self):
-        for w in self.list_frame.winfo_children()[6:]:
+        for w in self.list_frame.winfo_children()[4:]:
             w.destroy()
 
         clients = db.list_clients(self.search_var.get().strip(), client_type=self.client_type)
@@ -238,7 +139,7 @@ class ClientsTab(ctk.CTkFrame):
                           else "Aucun client. Cliquez sur \"+ Nouveau client\" pour commencer.")
             empty = ctk.CTkLabel(self.list_frame, text=empty_text,
                                   font=body_font(13), text_color=COLORS["text_muted"])
-            empty.grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=20)
+            empty.grid(row=1, column=0, columnspan=4, sticky="w", padx=8, pady=20)
             return
 
         CHUNK = 25

@@ -488,8 +488,10 @@ def get_client_service_prices(client_id: int):
 
 def _set_client_service_prices(conn, client_id, rows):
     """rows: list of dicts {service_id, description, price}. Replaces all existing rows for this client."""
+    if rows is None:
+        return  # services are no longer set from the client form: keep legacy data untouched
     conn.execute("DELETE FROM client_service_prices WHERE client_id = ?", (client_id,))
-    for row in rows or []:
+    for row in rows:
         conn.execute(
             "INSERT INTO client_service_prices (client_id, service_id, description, price) VALUES (?, ?, ?, ?)",
             (client_id, row.get("service_id"), row["description"], row.get("price", 0.0))
@@ -796,23 +798,32 @@ def finalize_invoice(invoice_id):
 
 def _set_invoice_items(conn, invoice_id, selected_items):
     """Replaces all invoice_items for this invoice with the given selection.
-    selected_items: list of dicts {description, price, source_price_id}."""
+    selected_items: list of dicts {description, quantity, unit_price, service_id}.
+    Legacy dicts {description, price, source_price_id} (quantity 1) are still accepted."""
     conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", (invoice_id,))
     for item in selected_items or []:
-        price = item.get("price", 0.0)
+        if "unit_price" in item:
+            quantity = float(item.get("quantity", 1) or 1)
+            unit_price = float(item["unit_price"])
+        else:
+            quantity = 1.0
+            unit_price = float(item.get("price", 0.0))
+        line_total = round(quantity * unit_price, 2)
         conn.execute("""
             INSERT INTO invoice_items
                 (invoice_id, service_id, description, quantity, unit_price, line_total, source_price_id)
-            VALUES (?, ?, ?, 1, ?, ?, ?)
-        """, (invoice_id, item.get("service_id"), item["description"], price, price, item.get("source_price_id")))
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (invoice_id, item.get("service_id"), item["description"], quantity, unit_price,
+              line_total, item.get("source_price_id")))
 
 
 def get_invoice_items(invoice_id):
-    """Returns this invoice's snapshotted line items (description, price, source_price_id).
+    """Returns this invoice's snapshotted line items (description, quantity, unit_price,
+    price = line total, source_price_id).
     Empty list if this invoice predates per-invoice item snapshots."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, service_id, description, line_total AS price, source_price_id "
+        "SELECT id, service_id, description, quantity, unit_price, line_total AS price, source_price_id "
         "FROM invoice_items WHERE invoice_id = ? ORDER BY id", (invoice_id,)
     ).fetchall()
     conn.close()
@@ -873,7 +884,12 @@ def update_invoice(invoice_id, client_id, business_type, tva_rate, deadline, not
     if business_type != "company":
         tva_rate = 0.0
     conn = get_connection()
-    old = conn.execute("SELECT client_id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    old = conn.execute("SELECT client_id, numero FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    # A finalized (numbered) facture is locked: it can only be viewed and printed.
+    # To change it, it must first be moved back to List SF with "Défacturer".
+    if old is not None and old["numero"] is not None:
+        conn.close()
+        raise ValueError("Cette facture est verrouillée (déjà facturée). Défacturez-la pour la modifier.")
     conn.execute("""
         UPDATE invoices SET client_id = ?, business_type = ?, tva_rate = ?, deadline = ?, notes = ?
         WHERE id = ?

@@ -66,7 +66,7 @@ Le workflow publie un artefact téléchargeable nommé selon la branche ou le ta
 La version est définie dans `app/version.py`. Pour publier une version, mettez à jour `APP_VERSION`, poussez les changements, puis créez un tag correspondant, par exemple :
 
 ```text
-v2.0.0
+v2.0.6
 ```
 
 Le workflow construit alors l'installateur et publie automatiquement l'EXE et son fichier `.sha256` dans la GitHub Release.

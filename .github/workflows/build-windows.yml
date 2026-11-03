@@ -24,6 +24,13 @@ jobs:
           architecture: x64
           cache: pip
 
+      - name: Stamp app version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: python scripts/stamp_version.py "$env:TAG_NAME"
+
       - name: Install Python dependencies
         shell: pwsh
         run: |

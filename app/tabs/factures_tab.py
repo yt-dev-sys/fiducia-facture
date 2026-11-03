@@ -4,7 +4,7 @@ import customtkinter as ctk
 from PIL import Image
 from app import database as db
 from app.theme import COLORS, body_font, heading_font
-from app.format_utils import format_price_dh, MONTHS_FR
+from app.format_utils import format_price_dh, parse_price, MONTHS_FR
 from app.widgets import (
     section_title, primary_button, secondary_button, danger_button, MessageDialog, labeled_entry,
     SegmentedToggle, status_pill, avatar_badge, ConfirmDialog, bind_search_debounce
@@ -16,12 +16,117 @@ from app.app_paths import get_asset_path
 DEADLINE_OPTIONS = ["Immédiat", "30j", "60j", "90j", "120j"]
 
 
+QTY_W, PU_W, TTC_W, X_W = 64, 100, 124, 28
+
+
+def _fmt_num(value):
+    """1500.0 -> '1500', 12.5 -> '12.5' (for pre-filling entries)."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _parse_quantity(text):
+    try:
+        qty = float((text or "").strip().replace(",", "."))
+    except ValueError:
+        raise ValueError("la quantité (Q) doit être un nombre.")
+    if qty <= 0:
+        raise ValueError("la quantité (Q) doit être supérieure à 0.")
+    return qty
+
+
+def _layout_service_columns(frame):
+    frame.grid_columnconfigure(0, weight=1)
+    for col in (1, 2, 3, 4):
+        frame.grid_columnconfigure(col, weight=0)
+
+
+class InvoiceServiceRow(ctk.CTkFrame):
+    """One invoice line:  Service | Q | P.U | TTC.  Only Q and P.U are typed;
+    TTC (= Q x P.U) is calculated and read-only."""
+
+    def __init__(self, master, service_names, on_change, on_remove,
+                 service_name=None, quantity="1", unit_price="", fallback_service_id=None):
+        super().__init__(master, fg_color=COLORS["bg_soft"], corner_radius=12)
+        self.on_change = on_change
+        self.fallback_service_id = fallback_service_id
+        _layout_service_columns(self)
+
+        options = list(service_names)
+        if service_name and service_name not in options:
+            options.append(service_name)  # a service that was deleted since: keep it selectable
+        self.service_var = ctk.StringVar(value=service_name or (options[0] if options else ""))
+        ctk.CTkOptionMenu(
+            self, values=options or [""], variable=self.service_var, dynamic_resizing=False,
+            fg_color=COLORS["white"], button_color=COLORS["baby_blue_deep"],
+            button_hover_color=COLORS["baby_blue_dark"], text_color=COLORS["text"],
+            dropdown_fg_color=COLORS["white"]
+        ).grid(row=0, column=0, padx=(8, 6), pady=8, sticky="ew")
+
+        self.qty_var = ctk.StringVar(value=quantity)
+        ctk.CTkEntry(self, textvariable=self.qty_var, width=QTY_W, justify="center",
+                     fg_color=COLORS["white"], border_color=COLORS["border"]
+                     ).grid(row=0, column=1, padx=(0, 6), pady=8)
+
+        self.pu_var = ctk.StringVar(value=unit_price)
+        ctk.CTkEntry(self, textvariable=self.pu_var, width=PU_W, justify="right", placeholder_text="0.00",
+                     fg_color=COLORS["white"], border_color=COLORS["border"]
+                     ).grid(row=0, column=2, padx=(0, 6), pady=8)
+
+        self.ttc_label = ctk.CTkLabel(self, text="—", width=TTC_W, anchor="e",
+                                      font=body_font(12, "bold"), text_color=COLORS["text"])
+        self.ttc_label.grid(row=0, column=3, padx=(0, 6), pady=8)
+
+        ctk.CTkButton(self, text="✕", width=X_W, height=28, fg_color="transparent",
+                      text_color=COLORS["danger"], hover_color="#FDEAEA",
+                      command=lambda: on_remove(self)).grid(row=0, column=4, padx=(0, 6), pady=8)
+
+        self.qty_var.trace_add("write", lambda *_: self._refresh())
+        self.pu_var.trace_add("write", lambda *_: self._refresh())
+        self._refresh()
+
+    def line_total(self):
+        """Q x P.U, or None while either value is missing/invalid."""
+        try:
+            qty = _parse_quantity(self.qty_var.get())
+            if not self.pu_var.get().strip():
+                return None
+            return round(qty * parse_price(self.pu_var.get()), 2)
+        except ValueError:
+            return None
+
+    def _refresh(self):
+        total = self.line_total()
+        self.ttc_label.configure(text=format_price_dh(total) if total is not None else "—")
+        self.on_change()
+
+    def get_data(self, name_to_id):
+        """Validated line as a dict for db.create_invoice / update_invoice (raises ValueError)."""
+        name = self.service_var.get().strip()
+        if not name:
+            raise ValueError("choisissez un service.")
+        qty = _parse_quantity(self.qty_var.get())
+        if not self.pu_var.get().strip():
+            raise ValueError("le prix unitaire (P.U) est obligatoire.")
+        try:
+            unit_price = parse_price(self.pu_var.get())
+        except ValueError:
+            raise ValueError("le prix unitaire (P.U) doit être un nombre.")
+        if unit_price < 0:
+            raise ValueError("le prix unitaire (P.U) ne peut pas être négatif.")
+        return {"description": name, "quantity": qty, "unit_price": unit_price,
+                "service_id": name_to_id.get(name, self.fallback_service_id)}
+
+
 class InvoiceFormDialog(ctk.CTkToplevel):
     def __init__(self, master, on_saved, invoice=None):
         super().__init__(master)
+        if invoice and invoice.get("numero"):
+            self.after(0, self.destroy)  # finalized factures are locked
+            return
         self.invoice = invoice
         self.title("Modifier la facture" if invoice else "Nouvelle facture")
-        self.geometry("640x680")
+        self.geometry("720x760")
         self.configure(fg_color=COLORS["white"])
         self.grab_set()
 
@@ -56,7 +161,7 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         self.client_var = ctk.StringVar(value=default_client_name)
         ctk.CTkLabel(scroll, text="Client *", font=body_font(12, "bold"), text_color=COLORS["text_muted"]).pack(anchor="w")
         ctk.CTkOptionMenu(scroll, values=client_names, variable=self.client_var,
-                          command=self._on_client_change, fg_color=COLORS["bg_soft"],
+                          fg_color=COLORS["bg_soft"],
                           button_color=COLORS["baby_blue_deep"],
                           button_hover_color=COLORS["baby_blue_dark"], text_color=COLORS["text"],
                           dropdown_fg_color=COLORS["white"]).pack(anchor="w", pady=(4, 14), fill="x")
@@ -100,15 +205,47 @@ class InvoiceFormDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(scroll, text="Services", font=body_font(12, "bold"),
                      text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 4))
-        self.services_frame = ctk.CTkFrame(scroll, fg_color=COLORS["bg_soft"], corner_radius=12)
-        self.services_frame.pack(fill="x", pady=(0, 14))
-        self.service_checks = []
+
+        services = db.list_services()
+        self.service_names = [sv["name"] for sv in services]
+        self.name_to_id = {sv["name"]: sv["id"] for sv in services}
+        self.service_rows = []
+
+        header = ctk.CTkFrame(scroll, fg_color="transparent")
+        header.pack(fill="x")
+        _layout_service_columns(header)
+        head_font = body_font(11, "bold")
+        ctk.CTkLabel(header, text="Service", font=head_font, text_color=COLORS["text_muted"],
+                     anchor="w").grid(row=0, column=0, padx=(14, 6), sticky="w")
+        ctk.CTkLabel(header, text="Q", font=head_font, text_color=COLORS["text_muted"],
+                     width=QTY_W).grid(row=0, column=1, padx=(0, 6))
+        ctk.CTkLabel(header, text="P.U", font=head_font, text_color=COLORS["text_muted"],
+                     width=PU_W).grid(row=0, column=2, padx=(0, 6))
+        ctk.CTkLabel(header, text="TTC", font=head_font, text_color=COLORS["text_muted"],
+                     width=TTC_W, anchor="e").grid(row=0, column=3, padx=(0, 6))
+        ctk.CTkLabel(header, text="", width=X_W).grid(row=0, column=4, padx=(0, 6))
+
+        self.rows_container = ctk.CTkFrame(scroll, fg_color="transparent")
+        self.rows_container.pack(fill="x")
+
+        initial_rows = self._initial_rows()
+        if not self.service_names and not initial_rows:
+            ctk.CTkLabel(self.rows_container, text="Aucun service disponible. Ajoutez-en dans l'onglet Services.",
+                         font=body_font(12), text_color=COLORS["text_muted"]).pack(anchor="w", padx=12, pady=10)
+        else:
+            for row_values in (initial_rows or [{}]):
+                self.add_service_row(**row_values)
+            secondary_button(scroll, "+ Ajouter un service", self.add_service_row, width=190).pack(
+                anchor="w", pady=(8, 4))
+
+        self.total_label = ctk.CTkLabel(scroll, text="", font=body_font(13, "bold"), text_color=COLORS["text"])
+        self.total_label.pack(anchor="e", pady=(4, 14))
 
         self.notes_var = ctk.StringVar(value=invoice["notes"] if invoice and invoice.get("notes") else "")
         labeled_entry(scroll, "Notes (optionnel)", self.notes_var)[0].pack(fill="x", pady=(0, 14))
 
         self._on_type_change()
-        self._on_client_change(self.client_var.get())
+        self._refresh_total()
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=16)
@@ -122,37 +259,41 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         else:
             self.tva_frame.pack_forget()
 
-    def _on_client_change(self, client_display_name):
-        for w in self.services_frame.winfo_children():
-            w.destroy()
-        self.service_checks = []
+    def _initial_rows(self):
+        """Rows to show when the form opens: the invoice's own lines when editing a draft,
+        otherwise a single empty line."""
+        if not self.invoice:
+            return []
+        items = db.get_invoice_items(self.invoice["id"])
+        if items:
+            return [{"service_name": it["description"], "quantity": _fmt_num(it["quantity"]),
+                     "unit_price": _fmt_num(it["unit_price"]), "fallback_service_id": it.get("service_id")}
+                    for it in items]
+        # Legacy invoice created before per-invoice lines existed: start from the client's old prices.
+        return [{"service_name": r["description"], "quantity": "1", "unit_price": _fmt_num(r["price"]),
+                 "fallback_service_id": r.get("service_id")}
+                for r in db.get_client_service_prices(self.invoice["client_id"])]
 
-        client = self.client_by_display.get(client_display_name)
-        if not client:
+    def add_service_row(self, **values):
+        row = InvoiceServiceRow(self.rows_container, self.service_names,
+                                self._refresh_total, self.remove_service_row, **values)
+        row.pack(fill="x", pady=3)
+        self.service_rows.append(row)
+        self._refresh_total()
+
+    def remove_service_row(self, row):
+        if len(self.service_rows) <= 1:
             return
+        self.service_rows.remove(row)
+        row.destroy()
+        self._refresh_total()
 
-        rows = db.get_client_service_prices(client["id"])
-        if not rows:
-            ctk.CTkLabel(self.services_frame, text="Aucun service assigné à ce client.",
-                         font=body_font(12), text_color=COLORS["text_muted"]).pack(
-                 anchor="w", padx=12, pady=10)
+    def _refresh_total(self):
+        if not hasattr(self, "total_label"):
             return
-
-        preselected_ids = None
-        if self.invoice and client["id"] == self.invoice["client_id"]:
-            existing_items = db.get_invoice_items(self.invoice["id"])
-            if existing_items:
-                preselected_ids = {i["source_price_id"] for i in existing_items if i.get("source_price_id")}
-
-        for row in rows:
-            checked = True if preselected_ids is None else (row["id"] in preselected_ids)
-            var = ctk.BooleanVar(value=checked)
-            ctk.CTkCheckBox(
-                self.services_frame, text=f"{row['description']} — {format_price_dh(row['price'])}",
-                variable=var, fg_color=COLORS["baby_blue_deep"], hover_color=COLORS["baby_blue_dark"],
-                text_color=COLORS["text"], font=body_font(12)
-            ).pack(anchor="w", padx=12, pady=(10 if row is rows[0] else 4, 4 if row is not rows[-1] else 10))
-            self.service_checks.append((row, var))
+        totals = [r.line_total() for r in self.service_rows]
+        total = sum(t for t in totals if t is not None)
+        self.total_label.configure(text=f"Total TTC : {format_price_dh(total)}" if self.service_rows else "")
 
     def save(self):
         client = self.client_by_display.get(self.client_var.get())
@@ -179,14 +320,16 @@ class InvoiceFormDialog(ctk.CTkToplevel):
         else:
             tva_rate = 0.0
 
-        selected_items = [
-            {"description": row["description"], "price": row["price"],
-             "service_id": row.get("service_id"), "source_price_id": row["id"]}
-            for row, var in self.service_checks if var.get()
-        ]
-        if not selected_items:
-            MessageDialog(self, "Erreur", "Veuillez sélectionner au moins un service.", is_error=True)
+        if not self.service_rows:
+            MessageDialog(self, "Erreur", "Ajoutez d'abord un service dans l'onglet Services.", is_error=True)
             return
+        selected_items = []
+        for number, row in enumerate(self.service_rows, start=1):
+            try:
+                selected_items.append(row.get_data(self.name_to_id))
+            except ValueError as e:
+                MessageDialog(self, "Erreur", f"Ligne {number} : {e}", is_error=True)
+                return
 
         try:
             if self.invoice:
@@ -253,7 +396,10 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
         # Show only the services that were checked/selected for this invoice
         invoice_items = db.get_invoice_items(invoice_id)
         if invoice_items:
-            text = "\n".join(f"{r['description']} — {format_price_dh(r['price'])}" for r in invoice_items)
+            text = "\n".join(
+                f"{r['description']} — {r['quantity']:g} × {format_price_dh(r['unit_price'])} = {format_price_dh(r['price'])}"
+                for r in invoice_items
+            )
         else:
             text = "Aucun service sélectionné pour cette facture."
         ctk.CTkLabel(services_frame, text=text, font=body_font(12), text_color=COLORS["text"],
@@ -268,8 +414,10 @@ class InvoiceDetailDialog(ctk.CTkToplevel):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=(0, 16))
-        secondary_button(btn_frame, "Modifier", self.open_edit, width=100).pack(side="left", padx=6)
-        if not is_draft:
+        if is_draft:
+            secondary_button(btn_frame, "Modifier", self.open_edit, width=100).pack(side="left", padx=6)
+        else:
+            # Finalized factures are read-only: view and print only.
             primary_button(btn_frame, "Print", self.print_pdf, width=100).pack(side="left", padx=6)
 
     def open_edit(self):

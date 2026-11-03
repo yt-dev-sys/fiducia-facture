@@ -1,6 +1,7 @@
 import threading
 from datetime import datetime
 import customtkinter as ctk
+from app.tabs.update_progress_dialog import UpdateProgressDialog
 from app.theme import COLORS, body_font
 from app.widgets import section_title, primary_button, secondary_button, MessageDialog, ConfirmDialog
 import app.telegram_backup as telegram_backup
@@ -117,10 +118,18 @@ class AppSettingsDialog(ctk.CTkToplevel):
             try:
                 release = updater.fetch_latest_release()
                 if not release:
-                    self.after(0, lambda: MessageDialog(self, "Mise à jour", "Vous utilisez déjà la dernière version disponible."))
+                    seen = updater.LAST_SEEN.get("tag")
+                    extra = f"\nDernière version publiée : {seen}" if seen else ""
+                    msg = f"Vous utilisez déjà la dernière version ({APP_VERSION}).{extra}"
+                    self.after(0, lambda: MessageDialog(self, "Mise à jour", msg))
                     return
                 self.after(0, lambda r=release: self._offer_update(r))
+            except updater.UpdateError as e:
+                log_exception("Vérification des mises à jour", e)
+                msg = str(e)
+                self.after(0, lambda: MessageDialog(self, "Mise à jour", msg, is_error=True))
             except Exception as e:
+                log_exception("Vérification des mises à jour", e)
                 self.after(0, lambda: MessageDialog(self, "Mise à jour", "Impossible de vérifier les mises à jour pour le moment.", is_error=True))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -129,12 +138,11 @@ class AppSettingsDialog(ctk.CTkToplevel):
                       lambda: self._download_update(release))
 
     def _download_update(self, release):
-        def worker():
+        def start_installer(installer):
             try:
-                installer = updater.prepare_update(release)
-                self.after(0, lambda: updater.launch_installer(installer))
+                updater.launch_installer(installer)
                 self.after(1000, self.master.destroy)
             except Exception as e:
-                log_exception("Téléchargement de la mise à jour", e)
-                self.after(0, lambda: MessageDialog(self, "Mise à jour", "La mise à jour n'a pas pu être préparée. Votre version actuelle reste intacte.", is_error=True))
-        threading.Thread(target=worker, daemon=True).start()
+                log_exception("Lancement de l'installateur", e)
+                MessageDialog(self, "Mise à jour", "L'installation n'a pas pu démarrer. Votre version actuelle reste intacte.", is_error=True)
+        UpdateProgressDialog(self, release, start_installer)
