@@ -532,7 +532,7 @@ class FacturesTab(ctk.CTkFrame):
                 ("deadline", "Deadline"),
                 ("status", "Statut"),
             ]
-            col_weights = [1, 2, 3, 2, 2, 2, 1]
+            col_weights = [1, 2, 3, 2, 2, 2, 1, 1]
             header_offset = 1
         else:
             self.sort_headers = [
@@ -542,7 +542,7 @@ class FacturesTab(ctk.CTkFrame):
                 ("deadline", "Deadline"),
                 ("status", "Statut"),
             ]
-            col_weights = [2, 3, 2, 2, 2, 1]
+            col_weights = [2, 3, 2, 2, 2, 1, 1]
             header_offset = 0
 
         for i, w in enumerate(col_weights):
@@ -567,9 +567,15 @@ class FacturesTab(ctk.CTkFrame):
             )
             select_all_cb.grid(row=0, column=0, sticky="w", padx=8, pady=(0, 10))
 
-        ctk.CTkLabel(self.list_frame, text="", font=body_font(12, "bold"),
+        # En-tête pour les actions (Voir, Modifier)
+        ctk.CTkLabel(self.list_frame, text="Actions", font=body_font(12, "bold"),
                      text_color=COLORS["text_muted"], anchor="w").grid(
             row=0, column=len(self.sort_headers) + header_offset, sticky="w", padx=8, pady=(0, 10)
+        )
+        # Deuxième colonne d'actions pour le bouton Modifier
+        ctk.CTkLabel(self.list_frame, text="", font=body_font(12, "bold"),
+                     text_color=COLORS["text_muted"], anchor="w").grid(
+            row=0, column=len(self.sort_headers) + header_offset + 1, sticky="w", padx=8, pady=(0, 10)
         )
 
     def _toggle_select_mode(self):
@@ -720,6 +726,10 @@ class FacturesTab(ctk.CTkFrame):
         secondary_button(self.list_frame, "Voir", lambda inv=inv: self.open_detail(inv), width=70).grid(
             row=row, column=col_offset + 5, sticky="e", padx=8, pady=4)
 
+        # Bouton Modifier - permet d'éditer la facture (défacture si nécessaire)
+        secondary_button(self.list_frame, "Modifier", lambda inv=inv: self.open_edit(inv), width=70).grid(
+            row=row, column=col_offset + 6, sticky="e", padx=8, pady=4)
+
     def _rebuild_rows(self):
         for w in self.list_frame.winfo_children():
             if w.grid_info().get("row", 0) > 0:
@@ -728,7 +738,7 @@ class FacturesTab(ctk.CTkFrame):
         if not self.current_invoices:
             empty = ctk.CTkLabel(self.list_frame, text="Aucune facture trouvée.",
                                   font=body_font(13), text_color=COLORS["text_muted"])
-            col_span = 7 if self.show_checkboxes else 6
+            col_span = 8 if self.show_checkboxes else 7
             empty.grid(row=1, column=0, columnspan=col_span, sticky="w", padx=8, pady=20)
             return
 
@@ -771,6 +781,35 @@ class FacturesTab(ctk.CTkFrame):
 
     def open_detail(self, invoice):
         InvoiceDetailDialog(self, invoice["id"], self.refresh)
+
+    def open_edit(self, invoice):
+        """Open edit form for an invoice. If finalized, confirm unfinalize first."""
+        inv = invoice
+        is_finalized = bool(inv.get("numero"))
+
+        def do_edit():
+            # If finalized, unfinalize first (moves to draft/List SF)
+            if is_finalized:
+                try:
+                    db.unfinalize_invoice(inv["id"])
+                except Exception as e:
+                    log_exception("Défacturation pour modification", e)
+                    MessageDialog(self, "Erreur", f"Impossible de défacturer : {e}", is_error=True)
+                    return
+            # Open the edit form (now works because invoice is a draft)
+            InvoiceFormDialog(self, self.refresh, invoice=db.get_invoice(inv["id"]))
+
+        if is_finalized:
+            from app.widgets import ConfirmDialog
+            ConfirmDialog(
+                self,
+                f"La facture {inv['numero']} est déjà finalisée.\n\n"
+                "Pour la modifier, elle doit être défacturée (redevenir un brouillon dans l'onglet List SF).\n\n"
+                "Voulez-vous continuer ?",
+                do_edit
+            )
+        else:
+            do_edit()
 
     def bulk_delete(self):
         if not self.selected_invoice_ids:

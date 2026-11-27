@@ -15,7 +15,6 @@ from app.widgets import ConfirmDialog, MessageDialog
 from app import updater
 from app import telegram_backup
 from app import whats_new
-from app.tabs.whats_new_dialog import WhatsNewDialog
 from app.tabs.update_progress_dialog import UpdateProgressDialog
 from app.app_logger import log_exception, log_info
 
@@ -250,10 +249,8 @@ class FactureApp(ctk.CTk):
     def _show_whats_new_once(self):
         """After a new version is installed/opened for the first time, show the notes once."""
         try:
-            notes = whats_new.pending_notes()
-            whats_new.mark_seen()  # recorded right away so it can never appear twice
-            if notes and self.winfo_exists():
-                WhatsNewDialog(self, *notes)
+            # Use the new show_if_needed which handles marking as seen only when actually shown
+            whats_new.show_if_needed(self)
         except Exception as exc:
             log_exception("Fenêtre des nouveautés", exc)
 

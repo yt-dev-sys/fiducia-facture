@@ -45,11 +45,16 @@ def _read_last_seen() -> Optional[str]:
         return None
 
 
-def mark_seen() -> None:
+def mark_seen() -> bool:
+    """Mark current version as seen. Returns True on success, False on failure."""
     try:
-        (get_state_dir() / _STATE_FILE).write_text(json.dumps({"version": APP_VERSION}), encoding="utf-8")
+        state_dir = get_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / _STATE_FILE).write_text(json.dumps({"version": APP_VERSION}), encoding="utf-8")
+        return True
     except Exception as exc:
         log_exception("Enregistrement de la version vue", exc)
+        return False
 
 
 def pending_notes() -> Optional[Tuple[str, str]]:
@@ -61,3 +66,19 @@ def pending_notes() -> Optional[Tuple[str, str]]:
 
 def is_new_version() -> bool:
     return _read_last_seen() != APP_VERSION
+
+
+def show_if_needed(parent) -> bool:
+    """
+    Show the whats-new dialog if this version hasn't been seen yet.
+    Returns True if dialog was shown, False otherwise.
+    """
+    notes = pending_notes()
+    if not notes:
+        return False
+    # Only mark as seen if we're actually going to show the dialog
+    if mark_seen():
+        from app.tabs.whats_new_dialog import WhatsNewDialog
+        WhatsNewDialog(parent, *notes)
+        return True
+    return False
